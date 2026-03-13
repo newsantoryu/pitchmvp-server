@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env/
+.envrc
+
+# Whisper models (gigabytes)
+whisper-models/
+.cache/
+~/.cache/whisper-models/
+
+# Audio files
+*.wav
+*.mp3
+*.flac
+*.m4a
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# ngrok
+.ngrok2/
+ngrok.yml
+
+# Secrets
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+.env
