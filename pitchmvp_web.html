@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>PitchMVP</title>
+
+<style>
+body{
+font-family:Arial;
+background:#f4f4f4;
+padding:40px;
+}
+
+.box{
+background:white;
+padding:30px;
+border-radius:10px;
+max-width:700px;
+margin:auto;
+box-shadow:0 5px 20px rgba(0,0,0,0.1);
+}
+
+button{
+padding:10px 20px;
+font-size:16px;
+cursor:pointer;
+}
+
+#result{
+margin-top:30px;
+white-space:pre;
+font-family:monospace;
+font-size:18px;
+line-height:1.8;
+}
+
+#status{
+margin-top:20px;
+font-weight:bold;
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="box">
+
+<h2>PitchMVP Transcription</h2>
+
+<input type="file" id="audioFile">
+
+<br><br>
+
+<button onclick="sendAudio()">Transcrever</button>
+
+<div id="status"></div>
+
+<div id="result"></div>
+
+</div>
+
+<script>
+
+const SERVER_URL = "https://cryptographical-ruth-nonobstetrically.ngrok-free.dev"
+
+let currentJob = null
+
+async function sendAudio(){
+
+const file = document.getElementById("audioFile").files[0]
+
+if(!file){
+alert("Escolha um áudio")
+return
+}
+
+document.getElementById("status").innerText = "Enviando áudio..."
+
+const form = new FormData()
+form.append("file", file)
+
+const res = await fetch(SERVER_URL + "/transcribe-file",{
+method:"POST",
+body:form
+})
+
+const data = await res.json()
+
+currentJob = data.job_id
+
+document.getElementById("status").innerText =
+"Processando... Job: " + currentJob
+
+checkJob()
+
+}
+
+async function checkJob(){
+
+const res = await fetch(SERVER_URL + "/job/" + currentJob)
+
+const job = await res.json()
+
+if(job.status === "done"){
+
+document.getElementById("status").innerText = "Concluído!"
+
+renderResult(job.result.words)
+
+return
+}
+
+if(job.status === "error"){
+
+document.getElementById("status").innerText = "Erro: " + job.message
+
+return
+}
+
+document.getElementById("status").innerText =
+"Processando... " + (job.progress || 0) + "%"
+
+setTimeout(checkJob,2000)
+
+}
+
+function renderResult(words){
+
+let output = ""
+let line = ""
+
+words.forEach(w=>{
+
+const note = w.note ? w.note : ""
+
+line += w.text + " "
+
+if(note){
+
+output += note.padEnd(10) + "\n"
+output += line + "\n\n"
+
+line = ""
+
+}
+
+})
+
+document.getElementById("result").innerText = output
+
+}
+
+</script>
+
+</body>
+</html>
