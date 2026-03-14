@@ -1,12 +1,23 @@
 # main.py — PitchMVP Transcription Server
-# Processamento assíncrono com polling — resolve timeout do ngrok free (30s)
+# Transcreve áudio, detecta nota por palavra e entrega cifra para o cantor.
+# Processamento assíncrono com polling (compatível com ngrok free 30s).
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
+import logging
+import os
+import tempfile
+import uuid
+
+import requests
+from pathlib import Path
+
+from fastapi import BackgroundTasks, File, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from faster_whisper import WhisperModel
 from pydantic import BaseModel
-import tempfile, os, requests, logging, uuid, time
-import numpy as np
+
+from music_utils import match_notes as music_match_notes
+from pitch_engine import extract_pitch
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,10 +32,8 @@ model = WhisperModel(
 )
 logger.info("Modelo pronto.")
 
-# Job store em memória — guarda resultado até ser buscado
 jobs: dict = {}
 
-# Prompt inicial instrui o Whisper a transcrever seções repetidas
 INITIAL_PROMPT = "Song with repeated choruses. Transcribe every word including repeated sections exactly as sung."
 
 TRANSCRIBE_PARAMS = dict(
@@ -42,62 +51,6 @@ TRANSCRIBE_PARAMS = dict(
     repetition_penalty=1.0,
 )
 
-NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
-
-def freq_to_note(freq):
-    if freq <= 0: return None
-    midi = int(round(69 + 12 * np.log2(freq / 440)))
-    return f"{NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
-
-def extract_pitch(path):
-    """Detecta pitch frame-a-frame usando torchcrepe (primário) ou pYIN via librosa (fallback).
-    
-    torchcrepe: mais preciso para voz, usa deep learning
-    librosa pYIN: fallback robusto, sem dependência de torch
-    """
-    # Tenta torchcrepe primeiro
-    try:
-        import torch, torchcrepe, librosa
-        audio, sr = librosa.load(path, sr=16000, mono=True)
-        audio_t = torch.tensor(audio).unsqueeze(0)
-        pitch, periodicity = torchcrepe.predict(
-            audio_t, sr, hop_length=160, fmin=50, fmax=1000,
-            model="full", batch_size=1024, device="cpu", return_periodicity=True
-        )
-        pitch = pitch[0].cpu().numpy()
-        periodicity = periodicity[0].cpu().numpy()
-        times = np.arange(len(pitch)) * 0.01
-        frames = [{"time": float(t), "freq": float(p)}
-                  for t, p, c in zip(times, pitch, periodicity) if c >= 0.8 and p > 0]
-        logger.info(f"torchcrepe: {len(frames)} frames de pitch")
-        return frames
-    except Exception as e:
-        logger.warning(f"torchcrepe indisponível ({e}), usando pYIN...")
-
-    # Fallback: pYIN via librosa (instalado junto com faster-whisper)
-    try:
-        import librosa
-        audio, sr = librosa.load(path, sr=22050, mono=True)
-        # pYIN: algoritmo probabilístico para detecção de pitch vocal
-        f0, voiced_flag, voiced_prob = librosa.pyin(
-            audio,
-            fmin=librosa.note_to_hz("C2"),   # ~65Hz — nota mais grave
-            fmax=librosa.note_to_hz("C6"),   # ~1047Hz — nota mais aguda
-            sr=sr,
-            hop_length=512,                  # ~23ms por frame a 22050Hz
-            fill_na=None,
-        )
-        hop_duration = 512 / sr
-        frames = []
-        for i, (freq, voiced) in enumerate(zip(f0, voiced_flag)):
-            if voiced and freq and freq > 0:
-                frames.append({"time": float(i * hop_duration), "freq": float(freq)})
-        logger.info(f"pYIN: {len(frames)} frames de pitch")
-        return frames
-    except Exception as e:
-        logger.error(f"pYIN também falhou: {e}")
-        return []
-
 
 def extract_words(segments):
     words = []
@@ -113,20 +66,9 @@ def extract_words(segments):
                         "note":  None,
                     })
     return words
-def match_notes(words, pitch_frames):
-    last_note = None
-    for w in words:
-        freqs = [f["freq"] for f in pitch_frames if w["start"] <= f["time"] <= w["end"]]
-        if freqs:
-            note = freq_to_note(float(np.median(freqs)))
-        else:
-            note = last_note  # mantém nota anterior se sem detecção
-        w["note"] = note
-        if note:
-            last_note = note
-    return words
 
-def run_job(job_id: str, tmp_path: str):
+
+def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto"):
     try:
         # ── 1. Transcrição ────────────────────────────────────────────────
         jobs[job_id] = {"status": "transcribing", "progress": 10}
@@ -139,10 +81,12 @@ def run_job(job_id: str, tmp_path: str):
         jobs[job_id] = {"status": "pitch", "progress": 80}
         logger.info(f"[{job_id}] Detectando pitch...")
         try:
-            pitch_frames = extract_pitch(tmp_path)
+            pitch_frames = extract_pitch(tmp_path, voice_gender=voice_gender)
             logger.info(f"[{job_id}] {len(pitch_frames)} frames de pitch")
             if pitch_frames:
-                words = match_notes(words, pitch_frames)
+                matched = music_match_notes(words, pitch_frames)
+                for i, w in enumerate(words):
+                    w["note"] = matched[i]["note"] if i < len(matched) else None
                 com_nota = sum(1 for w in words if w.get("note"))
                 logger.info(f"[{job_id}] {com_nota}/{len(words)} palavras com nota")
             else:
@@ -166,12 +110,29 @@ def run_job(job_id: str, tmp_path: str):
         logger.error(f"[{job_id}] Erro fatal: {e}")
         jobs[job_id] = {"status": "error", "message": str(e)}
     finally:
-        try: os.unlink(tmp_path)
-        except: pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
 
 class TranscribeRequest(BaseModel):
-    audio_url: str
-    anon_key:  str
+    audio_url:    str
+    anon_key:     str
+    voice_gender: str = "auto"   # "male" | "female" | "auto"
+
+# Diretório do main.py (para servir o HTML)
+_HTML_DIR = Path(__file__).resolve().parent
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Serve a interface web PitchMVP (upload, URL, microfone, cifra)."""
+    html_path = _HTML_DIR / "pitchmvp_web.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="pitchmvp_web.html não encontrado")
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
 
 @app.get("/health")
 def health():
@@ -205,11 +166,15 @@ async def transcribe(req: TranscribeRequest, bg: BackgroundTasks):
         tmp_path = tmp.name
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {"status": "queued", "progress": 5}
-    bg.add_task(run_job, job_id, tmp_path)
+    bg.add_task(run_job, job_id, tmp_path, req.voice_gender)
     return {"job_id": job_id}
 
 @app.post("/transcribe-file")
-async def transcribe_file(file: UploadFile = File(...), bg: BackgroundTasks = None):
+async def transcribe_file(
+    file: UploadFile = File(...),
+    voice_gender: str = "auto",
+    bg: BackgroundTasks = None,  # injetado pelo FastAPI
+):
     ext = os.path.splitext(file.filename or "")[1].lower() or ".wav"
     content = await file.read()
     logger.info(f"Upload: {file.filename} ({len(content)/1024:.1f} KB)")
@@ -218,5 +183,5 @@ async def transcribe_file(file: UploadFile = File(...), bg: BackgroundTasks = No
         tmp_path = tmp.name
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {"status": "queued", "progress": 5}
-    bg.add_task(run_job, job_id, tmp_path)
+    bg.add_task(run_job, job_id, tmp_path, voice_gender)
     return {"job_id": job_id}

@@ -40,8 +40,6 @@ ngrok.yml
 .env
 .env.local
 
-# IDE
+# IDE (descomente .vscode/ para versionar configurações da API)
 .vscode/
 .idea/
-
-.env
