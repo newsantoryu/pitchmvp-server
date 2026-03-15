@@ -1,0 +1,16 @@
+from sqlalchemy import Column, Integer, String, Float, JSON
+from database import Base
+
+class Score(Base):
+
+    __tablename__ = "scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    title = Column(String, index=True)
+
+    language = Column(String)
+
+    duration = Column(Float)
+
+    words = Column(JSON)

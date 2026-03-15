@@ -7,8 +7,10 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Ranges por gênero vocal (Hz)
+# Masculino: até 900 Hz para incluir tenor agudo e falsete (C5 ≈ 523, G5 ≈ 784)
+# Feminino: C3–G5; Auto: largo para qualquer voz
 VOICE_RANGES = {
-    "male":   {"fmin": 75,  "fmax": 600,  "pyin_lo": "C2", "pyin_hi": "C5"},
+    "male":   {"fmin": 75,  "fmax": 900,  "pyin_lo": "C2", "pyin_hi": "G5"},
     "female": {"fmin": 120, "fmax": 900,  "pyin_lo": "C3", "pyin_hi": "G5"},
     "auto":   {"fmin": 60,  "fmax": 900,  "pyin_lo": "C2", "pyin_hi": "C6"},
 }
@@ -38,12 +40,14 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
         pitch = pitch[0].cpu().numpy()
         periodicity = periodicity[0].cpu().numpy()
         times = np.arange(len(pitch)) * 0.01
+        # Masculino: limiar 0.78 para captar mais frames (timbre costuma dar periodicity menor)
+        conf_min = 0.78 if voice_gender == "male" else 0.85
         frames = [
             {"time": float(t), "freq": float(p)}
             for t, p, c in zip(times, pitch, periodicity)
-            if c >= 0.85 and p > 0 and vr["fmin"] <= p <= vr["fmax"]
+            if c >= conf_min and p > 0 and vr["fmin"] <= p <= vr["fmax"]
         ]
-        logger.info(f"torchcrepe: {len(frames)} frames ({voice_gender})")
+        logger.info(f"torchcrepe: {len(frames)} frames ({voice_gender}, conf>={conf_min})")
 
         # Suavização (remove jitter)
         if len(frames) > 3:
