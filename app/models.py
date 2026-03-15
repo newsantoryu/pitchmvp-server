@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, JSON
-from database import Base
+from app.database import Base
 
 class Score(Base):
 

@@ -680,8 +680,11 @@
             <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">
               <div class="rdot" id="rDot"></div><span id="rStatus">Pronto</span>
             </div>
-            <div id="songRange">Range da música: --</div>
-            <div id="voiceRange">Seu range: --</div>
+            <button id="start">Start Mic</button>
+            <div>Nota: <span id="note">--</span></div>
+            <div>Freq: <span id="freq">--</span></div>
+            <div>Cents: <span id="cents">--</span></div>
+            <script src="main.js"></script>
             <span class="rtime" id="rTime"></span>
           </div>
           <div class="wave"><canvas id="wCanvas"></canvas></div>
@@ -858,7 +861,7 @@
         const url = (document.getElementById('sUrl').value || '').trim().replace(/\/$/, '');
         const dot = document.getElementById('sDot');
         if (!url) { dot.className = 'dot'; return }
-        try { const r = await fetch(url + '/health', { signal: AbortSignal.timeout(4000), headers: { 'ngrok-skip-browser-warning': '1' } }); dot.className = r.ok ? 'dot ok' : 'dot err' }
+        try { const r = await fetch(url + '/pitch/health"', { signal: AbortSignal.timeout(4000), headers: { 'ngrok-skip-browser-warning': '1' } }); dot.className = r.ok ? 'dot ok' : 'dot err' }
         catch { dot.className = 'dot err' }
       }, 700);
     }
@@ -946,7 +949,7 @@
           const audioUrl = document.getElementById('supaUrl').value.trim();
           const anonKey = document.getElementById('anonKey').value.trim();
           if (!audioUrl) { showErr('Informe a URL do Supabase.'); document.getElementById('aBtn').disabled = false; return }
-          resp = await fetch(serverUrl + '/transcribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' }, body: JSON.stringify({ audio_url: audioUrl, anon_key: anonKey, voice_gender: voiceGender, language: voiceLanguage }) });
+          resp = await fetch(serverUrl + '/pitch/transcribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' }, body: JSON.stringify({ audio_url: audioUrl, anon_key: anonKey, voice_gender: voiceGender, language: voiceLanguage }) });
         } else {
           if (!selFile) { showErr('Selecione ou grave um arquivo.'); document.getElementById('aBtn').disabled = false; return }
           setProg(`Enviando ${Math.round(selFile.size / 1024)} KB...`, 8);
@@ -955,7 +958,7 @@
           fHeaders.append('ngrok-skip-browser-warning', '1');
           form.append('voice_gender', voiceGender);
           form.append('language', voiceLanguage);
-          resp = await fetch(serverUrl + '/transcribe-file', { method: 'POST', headers: fHeaders, body: form });
+          resp = await fetch(serverUrl + '/pitch/transcribe-file', { method: 'POST', headers: fHeaders, body: form });
         }
 
         if (!resp.ok) { const e = await resp.json().catch(() => ({ detail: resp.statusText })); throw new Error(e.detail || 'Erro ' + resp.status) }
@@ -968,7 +971,7 @@
         pollTimer = setInterval(async () => {
           elapsed += 5;
           try {
-            const jr = await fetch(serverUrl + '/job/' + job_id, { headers: { 'ngrok-skip-browser-warning': '1' } });
+            const jr = await fetch(serverUrl + '/pitch/job/' + job_id, { headers: { 'ngrok-skip-browser-warning': '1' } });
             if (!jr.ok) { clearInterval(pollTimer); showErr('Erro ao verificar job.'); document.getElementById('aBtn').disabled = false; return }
             const job = await jr.json();
 
@@ -1116,7 +1119,7 @@
       const serverUrl = getServerUrl();
       if (!serverUrl) { showErr('Configure a URL do servidor.'); return; }
       try {
-        const res = await fetch(serverUrl + '/scores', { headers: { 'ngrok-skip-browser-warning': '1' } });
+        const res = await fetch(serverUrl + '/pitch/scores', { headers: { 'ngrok-skip-browser-warning': '1' } });
         if (!res.ok) throw new Error('Erro ao carregar cifras');
         const scores = await res.json();
         const listEl = document.getElementById('scoresList');
@@ -1158,7 +1161,7 @@
       const serverUrl = getServerUrl();
       if (!serverUrl) return;
       try {
-        const res = await fetch(serverUrl + '/scores/' + id, {
+        const res = await fetch(serverUrl + '/pitch/scores/' + id, {
           method: 'DELETE',
           headers: { 'ngrok-skip-browser-warning': '1' }
         });
@@ -1178,7 +1181,7 @@
       const serverUrl = getServerUrl();
       if (!serverUrl) return;
       try {
-        const res = await fetch(serverUrl + '/scores/' + id, { headers: { 'ngrok-skip-browser-warning': '1' } });
+        const res = await fetch(serverUrl + '/pitch/scores/' + id, { headers: { 'ngrok-skip-browser-warning': '1' } });
         if (!res.ok) throw new Error('Cifra não encontrada');
         const data = await res.json();
         resultData = { words: data.words, language: data.language, duration: data.duration };

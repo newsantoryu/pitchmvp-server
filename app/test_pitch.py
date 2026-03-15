@@ -60,7 +60,7 @@ except Exception as e:
 
 # ── 3. Testa extract_pitch com diferentes voice_genders ──────────────────────
 print("\n[3/6] Testando extract_pitch (torchcrepe + fallback pYIN)...")
-from pitch_engine import extract_pitch
+from app.pitch_engine import extract_pitch
 
 for gender in ["auto", "male", "female"]:
     try:
@@ -69,7 +69,7 @@ for gender in ["auto", "male", "female"]:
         if frames:
             freqs = [f["freq"] for f in frames]
             median_freq = float(np.median(freqs))
-            from music_utils import freq_to_note
+            from app.music_utils import freq_to_note
             note = freq_to_note(median_freq)
             print(f"       Mediana: {median_freq:.1f}Hz → {note}")
     except Exception as e:
@@ -78,7 +78,7 @@ for gender in ["auto", "male", "female"]:
 
 # ── 4. Testa freq_to_note com correção de harmônicos ─────────────────────────
 print("\n[4/6] Testando freq_to_note...")
-from music_utils import freq_to_note
+from app.music_utils import freq_to_note
 
 test_freqs = [220, 440, 880, 1760]  # A3, A4, A5, A6
 for f in test_freqs:
@@ -88,8 +88,8 @@ for f in test_freqs:
 # ── 5. Testa match_notes completo ─────────────────────────────────────────────
 print("\n[5/6] Testando match_notes com palavras simuladas...")
 try:
-    from pitch_engine import extract_pitch
-    from music_utils import match_notes
+    from app.pitch_engine import extract_pitch
+    from app.music_utils import match_notes
 
     pitch_frames = extract_pitch(tmp_path, voice_gender="auto")
 
@@ -128,7 +128,7 @@ except Exception as e:
 # ── 6. Testa suavização musical em match_notes ───────────────────────────────
 print("\n[6/6] Testando suavização musical...")
 try:
-    from music_utils import match_notes
+    from app.music_utils import match_notes
 
     # Simula frames com saltos grandes (para testar suavização)
     pitch_frames = [
