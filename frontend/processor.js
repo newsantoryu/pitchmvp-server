@@ -1,9 +1,8 @@
 class PitchProcessor extends AudioWorkletProcessor {
     process(inputs) {
         const input = inputs[0];
-        if (!input.length) return true;
-        const channel = input[0];
-        this.port.postMessage(channel);
+        if (!input || !input[0]) return true;
+        this.port.postMessage(input[0]);
         return true;
     }
 }

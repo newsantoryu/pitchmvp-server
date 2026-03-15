@@ -590,11 +590,12 @@
       }
     }
   </style>
+  <script src="main.js"></script>
+  <script src="processor.js"></script>
 </head>
 
 <body>
   <div class="app">
-
     <div class="header">
       <div class="logo">
         <div class="logo-icon">
@@ -668,7 +669,20 @@
           </div>
         </div>
       </div>
+      <div id="realtime" class="tab-content">
+        <h1>Pitch Realtime</h1>
 
+        <div>
+          <button id="start">Start</button>
+          <button id="stop">Stop</button>
+        </div>
+
+        <div id="pitch-display">
+          <p>Nota: <span id="note">-</span></p>
+          <p>Frequência: <span id="freq">0.00</span> Hz</p>
+          <p>Cents: <span id="cents">0</span></p>
+        </div>
+      </div>
       <div id="tab-mic" class="hidden">
         <div class="mic-area">
           <div class="mic-row">
@@ -680,11 +694,6 @@
             <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">
               <div class="rdot" id="rDot"></div><span id="rStatus">Pronto</span>
             </div>
-            <button id="start">Start Mic</button>
-            <div>Nota: <span id="note">--</span></div>
-            <div>Freq: <span id="freq">--</span></div>
-            <div>Cents: <span id="cents">--</span></div>
-            <script src="main.js"></script>
             <span class="rtime" id="rTime"></span>
           </div>
           <div class="wave"><canvas id="wCanvas"></canvas></div>

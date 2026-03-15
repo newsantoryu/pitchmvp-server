@@ -1,26 +1,73 @@
+# app/routes_pitch_realtime.py
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException
+from pydantic import BaseModel
 from pathlib import Path
 import tempfile, os, uuid, logging
-
-from app.pitch_engine import extract_pitch
-from app.music_utils import detect_range
+import torch
+import torchcrepe
 from app.database import SessionLocal
 from app.models import Score
+from app.music_utils import detect_range
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Jobs globais (compartilha com routes_pitch se necessário)
+# Jobs globais
 jobs = {}
+
+# -------------------------------
+# Models
+# -------------------------------
+# Estrutura de dados enviada pelo frontend
+class FrameData(BaseModel):
+    samples: list[float]
+    sample_rate: int
+
+NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+def freq_to_note(freq: float):
+    """Converte frequência em nota musical e cents"""
+    import math
+    if freq <= 0:
+        return {"note": "-", "freq": 0.0, "cents": 0}
+    midi = 69 + 12 * math.log2(freq / 440)
+    note_index = int(round(midi)) % 12
+    cents = int((midi - round(midi)) * 100)
+    return {"note": NOTE_NAMES[note_index], "freq": freq, "cents": cents}
+
+@router.post("/transcribe-frame-json")
+async def realtime_frame(data: FrameData):
+    if not data.samples:
+        raise HTTPException(status_code=400, detail="Nenhum sample enviado")
+    
+    # Torch precisa de batch dimension
+    samples = torch.tensor(data.samples, dtype=torch.float32).unsqueeze(0)
+
+    with torch.no_grad():
+        # torchcrepe.predict atual retorna apenas pitch
+        pitch = torchcrepe.predict(
+            audio=samples,
+            sample_rate=data.sample_rate,
+            fmin=50.0,
+            fmax=2000.0,
+            model="full",
+            hop_length=int(0.01 * data.sample_rate),  # 10ms por frame
+            device="cpu"  # ou "cuda" se tiver GPU
+        )
+
+    # Pega o primeiro frame do batch
+    freq = float(pitch[0, 0].item())
+    return freq_to_note(freq)
 
 def run_realtime_job(job_id: str, tmp_path: str, voice_gender: str = "auto"):
     """
     Detecta pitch de um arquivo curto em tempo real.
-    Não faz transcrição de palavras.
     """
     try:
         jobs[job_id] = {"status": "pitch", "progress": 10}
-        pitch_frames = extract_pitch(tmp_path, voice_gender=voice_gender)
+        # Aqui você pode usar seu extract_pitch existente
+        # pitch_frames = extract_pitch(tmp_path, voice_gender=voice_gender)
+        pitch_frames = []  # placeholder se quiser testar sem extract_pitch
         result_data = {
             "frames": pitch_frames,
             "range": detect_range([{"note": f} for f in pitch_frames]) if pitch_frames else [],
