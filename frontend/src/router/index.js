@@ -3,11 +3,11 @@ import { createRouter, createWebHistory } from "vue-router"
 // Pages (versões simplificadas para garantir funcionamento)
 import Home from "../pages/Home-simple.vue"
 import Upload from "../pages/Upload-simple.vue"
+import Scores from "../pages/Scores-functional.vue"
 
 // Placeholder pages (serão implementadas depois)
 const RealtimePitch = { template: '<div class="page"><h1>🎯 Pitch em Tempo Real</h1><p><a href="/">← Voltar</a></p></div>' }
 const Transcription = { template: '<div class="page"><h1>🎼 Transcrição</h1><p><a href="/">← Voltar</a></p></div>' }
-const Scores = { template: '<div class="page"><h1>📚 Minhas Cifras</h1><p><a href="/">← Voltar</a></p></div>' }
 const Results = { template: '<div class="page"><h1>📊 Resultados</h1><p><a href="/">← Voltar</a></p></div>' }
 
 const router = createRouter({
