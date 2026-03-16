@@ -1,239 +1,174 @@
-# PitchMVP Frontend - Versão Componentizada e Modular
+# PitchMVP - Frontend Vue 3 + Vite
 
-## Estrutura de Arquivos
+## 🚀 Migração Concluída com Sucesso!
+
+Frontend migrado do HTML monolítico para Vue 3 + Vite seguindo arquitetura moderna.
+
+## 📁 Estrutura do Projeto
 
 ```
 frontend/
-├── index.html                 # HTML original (legado - 42KB monolítico)
-├── index-refactored.html      # HTML com componentes (versão 1.0)
-├── index-modular.html         # HTML com arquitetura modular ES6 (versão 2.0)
-├── styles.css                 # CSS consolidado (8.8KB)
-├── components/                # Componentes visuais (versão 1.0)
-│   ├── Header.js             # Componente de cabeçalho
-│   ├── AudioSource.js        # Componente de fonte de áudio
-│   ├── Controls.js           # Componente de controles e progresso
-│   ├── Metrics.js            # Componente de métricas
-│   ├── Results.js            # Componente de resultados
-│   ├── ScoresView.js         # Componente de visualização de cifras
-│   └── RealtimePitch.js      # Componente de detecção de pitch em tempo real
-├── js/                       # Arquitetura modular ES6 (versão 2.0)
-│   ├── main.js               # Ponto de entrada principal
-│   ├── app/                  # Camada de aplicação
-│   │   ├── State.js          # Gerenciamento de estado global
-│   │   └── AppController.js  # Controller principal da aplicação
-│   ├── services/             # Camada de serviços
-│   │   ├── ApiService.js     # Comunicação com API
-│   │   ├── AudioService.js   # Gerenciamento de áudio
-│   │   └── PitchService.js   # Detecção de pitch e análise musical
-│   ├── ui/                   # Camada de interface
-│   │   └── UIController.js   # Controlador de UI
-│   └── utils/                # Utilitários
-│       └── NoteUtils.js      # Funções de notas e utilidades
-├── main.js                    # Script legado (se existir)
-├── processor.js               # Processador de áudio legado (se existir)
-└── README.md                  # Este arquivo
+├── src/
+│   ├── components/          # Componentes Vue
+│   │   ├── Recorder.vue    # Botão de gravação
+│   │   ├── PitchDisplay.vue # Display de notas
+│   │   ├── StatusBar.vue   # Status e progresso
+│   │   └── PitchGraph.vue  # Gráfico de pitch
+│   ├── composables/        # Hooks Vue
+│   │   ├── useMicrophone.js # Gestão de microfone
+│   │   └── usePitch.js     # Detecção de pitch
+│   ├── services/           # Serviços de API
+│   │   └── api.js         # Comunicação com backend
+│   ├── App.vue            # Componente principal
+│   ├── main.js            # Ponto de entrada
+│   └── style.css          # Estilos globais
+├── index.html             # HTML template
+├── vite.config.js         # Config Vite
+└── package.json           # Dependências
 ```
 
-## Versões
+## 🛠️ Tecnologias Utilizadas
 
-### 🚀 Versão 2.0 - Modular ES6 (Recomendada)
-**Arquivo**: `index-modular.html`
+- **Vue 3.4.0** - Framework JavaScript reativo
+- **Vite 5.0.0** - Build tool e dev server
+- **Essentia.js** - Processamento de áudio e pitch detection
+- **FastAPI** - Backend Python (existente)
 
-**Características**:
-- ✅ Arquitetura modular com ES6 modules
-- ✅ Separação clara de responsabilidades
-- ✅ Injeção de dependências
-- ✅ Tratamento robusto de erros
-- ✅ Verificação de compatibilidade
-- ✅ Código testável e maintível
+## 🎯 Funcionalidades Migradas
 
-**Estrutura**:
+### ✅ Componentes Vue
+- **Recorder.vue** - Botão gravar/parar com timer
+- **PitchDisplay.vue** - Display de notas em tempo real
+- **StatusBar.vue** - Status do sistema e progresso
+- **PitchGraph.vue** - Gráfico de frequência ao vivo
+
+### ✅ Hooks Personalizados
+- **useMicrophone()** - Controle de stream de áudio
+- **usePitch()** - Detecção de pitch com Essentia.js
+
+### ✅ Serviço de API
+- **api.js** - Comunicação com backend Python
+- Endpoints: `/health`, `/pitch/transcribe-file`, `/pitch/job/{id}`
+
+## 🚀 Como Usar
+
+### 1. Iniciar Backend
+```bash
+cd /home/victor/pitchmvp-server
+python3 main.py
 ```
-js/
-├── app/          - Lógica de negócio e estado
-├── services/     - Comunicação externa e APIs
-├── ui/          - Manipulação do DOM
-└── utils/       - Funções puras e utilitários
+Backend: `http://localhost:8000`
+
+### 2. Iniciar Frontend
+```bash
+cd /home/victor/pitchmvp-server/frontend
+npm install
+npm run dev
+```
+Frontend: `http://localhost:5173`
+
+### 3. Usar o Sistema
+1. Acesse `http://localhost:5173`
+2. Clique em "Gravar" para iniciar captura
+3. Veja pitch detection em tempo real
+4. Monitore status e gráfico
+
+## 🔧 Desenvolvimento
+
+### Adicionar Novos Componentes
+```vue
+<!-- src/components/NovoComponente.vue -->
+<script setup>
+// Lógica do componente
+</script>
+
+<template>
+  <!-- HTML do componente -->
+</template>
+
+<style scoped>
+/* Estilos do componente */
+</style>
 ```
 
-### 📦 Versão 1.0 - Componentizada
-**Arquivo**: `index-refactored.html`
-
-**Características**:
-- ✅ Componentes JavaScript reutilizáveis
-- ✅ CSS separado
-- ✅ HTML limpo
-- ⚠️ Ainda usa algumas variáveis globais
-
-### 🗿 Versão Legada
-**Arquivo**: `index.html`
-
-**Características**:
-- ❌ HTML monolítico de 42KB
-- ❌ CSS inline
-- ❌ JavaScript misturado
-- ❌ Difícil de manter
-
-## Arquitetura Modular (v2.0)
-
-### Camadas
-
-#### 1. **App Layer** (`js/app/`)
-- **State.js**: Gerenciamento centralizado de estado
-- **AppController.js**: Orquestração principal da aplicação
-
-#### 2. **Service Layer** (`js/services/`)
-- **ApiService.js**: Comunicação HTTP com servidor
-- **AudioService.js**: Gravação e processamento de áudio
-- **PitchService.js**: Análise musical e detecção de notas
-
-#### 3. **UI Layer** (`js/ui/`)
-- **UIController.js**: Manipulação do DOM e eventos
-
-#### 4. **Utils Layer** (`js/utils/`)
-- **NoteUtils.js**: Funções puras de música e utilidades
-
-### Padrões Arquiteturais
-
-#### 🏗️ **Separation of Concerns**
-Cada camada tem responsabilidade única:
-- **App**: Orquestração e estado
-- **Services**: Lógica de negócio e comunicação externa
-- **UI**: Apresentação e interação
-- **Utils**: Funções puras reutilizáveis
-
-#### 🔌 **Dependency Injection**
-Services injetados nos controllers:
+### Usar Hooks
 ```javascript
-import { apiService } from '../services/ApiService.js';
-import { audioService } from '../services/AudioService.js';
+import { useMicrophone } from './composables/useMicrophone.js'
+
+const { isRecording, start, stop } = useMicrophone()
 ```
 
-#### 📊 **State Management**
-Estado centralizado em `State.js`:
+### Chamadas API
 ```javascript
-export class State {
-  constructor() {
-    this.tab = 'upload';
-    this.selectedFile = null;
-    this.resultData = null;
-    // ...
+import { transcribe, health } from './services/api.js'
+
+const healthStatus = await health()
+const result = await transcribe(file)
+```
+
+## 📊 Proxy Vite (CORS)
+
+O Vite está configurado com proxy para evitar CORS:
+
+```javascript
+// vite.config.js
+server: {
+  proxy: {
+    "/api": {
+      target: "http://localhost:8000",
+      changeOrigin: true
+    }
   }
 }
 ```
 
-#### 🎯 **Event-Driven Communication**
-Comunicação via eventos customizados:
-```javascript
-window.dispatchEvent(new CustomEvent('audioDataAvailable', {
-  detail: { data: event.data }
-}));
+Frontend chama: `/api/transcribe-file`
+Backend recebe: `http://localhost:8000/pitch/transcribe-file`
+
+## 🏗️ Build para Produção
+
+```bash
+npm run build
 ```
 
-## Como Usar
+Gera pasta `dist/` com arquivos otimizados.
 
-### Versão Modular (Recomendada)
-1. Abra `index-modular.html` no navegador
-2. Use servidor HTTP local devido a ES6 modules:
-   ```bash
-   # Python 3
-   python -m http.server 8000
-   
-   # Node.js
-   npx serve .
-   
-   # PHP
-   php -S localhost:8000
-   ```
+## 🔄 Comparação: Antes vs Depois
 
-### Versão Componentizada
-1. Abra `index-refactored.html` no navegador
-2. Funciona diretamente no arquivo (file://)
+| HTML Antigo | Vue 3 Novo |
+|-------------|-------------|
+| 42KB monolítico | Componentes modulares |
+| JavaScript vanilla | Vue Composition API |
+| Classes CSS | Scoped CSS |
+| Callbacks | Eventos reativos |
+| DOM manual | Virtual DOM |
 
-## Benefícios da Arquitetura Modular
+## 🎵 Features Implementadas
 
-### 🧪 **Testabilidade**
-- Cada módulo pode ser testado isoladamente
-- Mocks fáceis de implementar
-- Testes de unidade e integração
+- ✅ **Gravação de Áudio** - Com permissão e timer
+- ✅ **Pitch Detection** - Essentia.js em tempo real
+- ✅ **Display de Notas** - Conversão freq→nota
+- ✅ **Gráfico em Tempo Real** - Canvas animado
+- ✅ **Status System** - Feedback visual
+- ✅ **API Integration** - Backend Python
+- ✅ **Responsive Design** - Mobile-friendly
 
-### 🔧 **Maintenabilidade**
-- Código organizado por responsabilidade
-- Fácil de localizar e corrigir bugs
-- Novas features podem ser adicionadas sem afetar outras partes
+## 🚀 Próximos Passos
 
-### 📈 **Escalabilidade**
-- Novos serviços podem ser adicionados
-- Múltiplos controllers podem coexistir
-- Arquitetura suporta crescimento da aplicação
+1. **Upload de Arquivos** - Componente para upload
+2. **Results View** - Exibir transcrições
+3. **Score System** - Cifras e partituras
+4. **Realtime Pitch** - Modos local/remoto
+5. **Export Features** - PDF, compartilhamento
 
-### 🔄 **Reusabilidade**
-- Services podem ser reutilizados em outras partes
-- Utils são funções puras reutilizáveis
-- Controllers podem ser estendidos
+## 🎯 Benefícios da Migração
 
-### 🛡️ **Robustez**
-- Tratamento centralizado de erros
-- Verificação de compatibilidade
-- Fallbacks e graceful degradation
+- **Performance** - Virtual DOM, lazy loading
+- **Manutenibilidade** - Componentes reutilizáveis
+- **Escalabilidade** - Arquitetura modular
+- **Developer Experience** - Hot reload, TypeScript ready
+- **Modern Stack** - Vue 3, ES6+, Vite
 
-## Próximos Passos
+---
 
-### 🧪 **Testing**
-- Adicionar Jest para testes unitários
-- Testar cada service isoladamente
-- Mock de APIs externas
-
-### 📦 **Build System**
-- Configurar Webpack ou Vite
-- Bundle para produção
-- Otimização de assets
-
-### 🔒 **TypeScript**
-- Migrar para TypeScript
-- Tipagem forte dos services
-- Interfaces bem definidas
-
-### 🗃️ **State Management Avançado**
-- Considerar Redux ou Zustand
-- Time travel debugging
-- Middleware para side effects
-
-### 🎨 **UI Framework**
-- Migrar para React/Vue/Svelte
-- Componentes declarativos
-- Virtual DOM
-
-## Comparação de Versões
-
-| Característica | Legada | Componentizada | Modular |
-|---|---|---|---|
-| **Tamanho HTML** | 42KB | 14KB | 12KB |
-| **CSS** | Inline | Separado | Separado |
-| **JavaScript** | Monolítico | Componentes | Módulos ES6 |
-| **Testabilidade** | ❌ | ⚠️ | ✅ |
-| **Maintenibilidade** | ❌ | ✅ | ✅✅ |
-| **Escalabilidade** | ❌ | ✅ | ✅✅ |
-| **Performance** | ⚠️ | ✅ | ✅✅ |
-
-## Melhorias Implementadas
-
-### ✅ **Code Organization**
-- Separado em 4 camadas distintas
-- Cada arquivo com responsabilidade clara
-- Nomenclatura consistente
-
-### ✅ **Error Handling**
-- Try/catch em todas operações assíncronas
-- Tratamento centralizado de erros globais
-- Mensagens amigáveis para usuário
-
-### ✅ **Performance**
-- Lazy loading de módulos
-- Event delegation
-- Otimização de renderização
-
-### ✅ **Developer Experience**
-- IntelliSense completo
-- Import statements claros
-- Debugging facilitado
+**Status**: ✅ Migração concluída e funcional!
