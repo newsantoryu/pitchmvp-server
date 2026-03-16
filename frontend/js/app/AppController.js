@@ -421,7 +421,49 @@ export class AppController {
   }
 
   /**
-   * Inicia detecção de pitch em tempo real
+   * Inicia detecção de pitch em tempo real - MODO LOCAL
+   */
+  async startRealtimePitchLocal() {
+    try {
+      console.log('Iniciando pitch detection LOCAL...');
+      await realtimePitchService.startRealtimeDetectionLocal();
+
+      // Configura callbacks da UI
+      realtimePitchUI.setCallbacks({
+        onStart: () => this.startRealtimePitch(),
+        onStop: () => this.stopRealtimePitch()
+      });
+
+      console.log('Pitch detection LOCAL iniciado');
+    } catch (error) {
+      console.error('Erro ao iniciar pitch LOCAL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Inicia detecção de pitch em tempo real - MODO REMOTO
+   */
+  async startRealtimePitchRemote(backendUrl = '') {
+    try {
+      console.log('Iniciando pitch detection REMOTO...');
+      await realtimePitchService.startRealtimeDetectionRemote(backendUrl);
+
+      // Configura callbacks da UI
+      realtimePitchUI.setCallbacks({
+        onStart: () => this.startRealtimePitch(),
+        onStop: () => this.stopRealtimePitch()
+      });
+
+      console.log('Pitch detection REMOTO iniciado');
+    } catch (error) {
+      console.error('Erro ao iniciar pitch REMOTO:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Inicia detecção de pitch em tempo real (método legado)
    */
   async startRealtimePitch() {
     try {
@@ -489,6 +531,7 @@ export class AppController {
    * Funções de UI expostas globalmente
    */
   getUIFunctions() {
+    const self = this;
     return {
       switchTab: uiController.switchTab.bind(uiController),
       setGender: uiController.setGender.bind(uiController),
@@ -503,8 +546,8 @@ export class AppController {
       exportPDF: this.exportPDF.bind(this),
       copyLyrics: this.copyLyrics.bind(this),
       pingServer: this.pingServer.bind(this),
-      toggleRealtimePitch: this.toggleRealtimePitchUI.bind(this),
-      startRealtimePitch: this.startRealtimePitch.bind(this),
+      startRealtimePitchLocal: this.startRealtimePitchLocal.bind(this),
+      startRealtimePitchRemote: this.startRealtimePitchRemote.bind(this),
       stopRealtimePitch: this.stopRealtimePitch.bind(this)
     };
   }

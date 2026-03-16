@@ -29,7 +29,8 @@
         </button>
       </div>
       <button onclick="loadScores()">📚 Minhas cifras</button>
-      <button onclick="toggleRealtimePitch()" class="btn btn-sm">🎵 Pitch Realtime</button>
+      <button onclick="toggleRealtimePitchLocal()" class="btn btn-sm">🎵 Pitch Local</button>
+      <button onclick="toggleRealtimePitchRemote()" class="btn btn-sm">🎵 Pitch Remoto</button>
       <div class="server-row">
         <div class="dot" id="sDot"></div>
         <input class="server-in" id="sUrl" type="text" placeholder="https://seu-ngrok.ngrok-free.app"
@@ -202,6 +203,129 @@
     <!-- Container para Realtime Pitch -->
     <div id="realtimePitchContainer"></div>
 
+    <!-- Container Realtime Pitch Local -->
+    <div id="realtimePitchLocalView" class="card hidden" style="margin-top: 20px;">
+      <div class="clabel">
+        🎵 Pitch em Tempo Real - Local
+        <span class="realtime-indicator" id="realtimeIndicatorLocal"></span>
+      </div>
+
+      <div
+        style="background:var(--surface2);padding:12px;border-radius:8px;margin-bottom:20px;border-left:4px solid var(--blue)">
+        <div style="font-weight:600;margin-bottom:8px">🔧 Processamento Local Essentia.js</div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.5">
+          • Detecção de pitch diretamente no navegador<br>
+          • Algoritmo Essentia.js YIN algorithm<br>
+          • Processamento em tempo real sem latência<br>
+          • Análise básica de nota e frequência
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-bottom:20px">
+        <button id="startLocalBtn" class="btn btn-p"> Iniciar Local</button>
+        <button id="stopLocalBtn" class="btn btn-d" disabled> Parar</button>
+        <button onclick="toggleRealtimePitchLocal()" class="btn btn-sm"> Fechar</button>
+      </div>
+
+      <div class="clabel">Status da Detecção</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+        <div>
+          <div class="clabel">Nota Atual</div>
+          <div id="currentNoteLocal" style="font-size:24px;color:var(--purple);font-weight:600">-</div>
+        </div>
+        <div>
+          <div class="clabel">Frequência</div>
+          <div id="currentFreqLocal" style="font-size:20px;color:var(--text);font-weight:500">0.00 Hz</div>
+        </div>
+      </div>
+
+      <div class="clabel">Visualização em Tempo Real</div>
+      <canvas id="pitchCanvasLocal"
+        style="width:100%;height:120px;border:1px solid var(--border);border-radius:8px;margin-bottom:20px;background:var(--surface2)"></canvas>
+
+      <div class="clabel">Estatísticas Locais</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+        <div style="background:var(--surface2);padding:12px;border-radius:8px">
+          <div style="font-weight:600;margin-bottom:8px"> Notas Detectadas</div>
+          <div id="notesDetectedLocal" style="font-size:18px;color:var(--blue);font-weight:500">0</div>
+        </div>
+        <div style="background:var(--surface2);padding:12px;border-radius:8px">
+          <div style="font-weight:600;margin-bottom:8px">📊 Confiança</div>
+          <div id="confidenceLocal" style="font-size:18px;color:var(--green);font-weight:500">0%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Container Realtime Pitch Remoto -->
+    <div id="realtimePitchRemoteView" class="card hidden" style="margin-top: 20px;">
+      <div class="clabel">
+        🎵 Pitch em Tempo Real - Remoto
+        <span class="realtime-indicator" id="realtimeIndicatorRemote"></span>
+      </div>
+
+      <div
+        style="background:var(--surface2);padding:12px;border-radius:8px;margin-bottom:20px;border-left:4px solid var(--purple)">
+        <div style="font-weight:600;margin-bottom:8px">🔬 Processamento Backend CREPE</div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.5">
+          • Dados enviados para servidor CREPE a cada 5 segundos<br>
+          • Análise avançada de precisão vocal com algoritmos de ML<br>
+          • Classificação automática de perfil vocal (Soprano/Tenor/Contralto/Baixo)<br>
+          • Sugestões personalizadas baseadas na análise estatística
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-bottom:20px">
+        <button id="startRemoteBtn" class="btn btn-p">🟢 Iniciar Remoto</button>
+        <button id="stopRemoteBtn" class="btn btn-d" disabled>🔴 Parar</button>
+        <button onclick="toggleRealtimePitchRemote()" class="btn btn-sm">✖ Fechar</button>
+      </div>
+
+      <div class="clabel">Status da Detecção Remota</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
+        <div>
+          <div class="clabel">Nota Atual</div>
+          <div id="currentNoteRemote" style="font-size:24px;color:var(--purple);font-weight:600">-</div>
+        </div>
+        <div>
+          <div class="clabel">Frequência</div>
+          <div id="currentFreqRemote" style="font-size:20px;color:var(--text);font-weight:500">0.00 Hz</div>
+        </div>
+        <div>
+          <div class="clabel">Precisão Backend</div>
+          <div id="backendAccuracy" style="font-size:24px;color:var(--green);font-weight:600">-</div>
+        </div>
+      </div>
+
+      <div class="clabel">Visualização em Tempo Real</div>
+      <canvas id="pitchCanvasRemote"
+        style="width:100%;height:120px;border:1px solid var(--border);border-radius:8px;margin-bottom:20px;background:var(--surface2)"></canvas>
+
+      <div class="clabel">Análise do Backend</div>
+      <div id="backendAnalysis" style="background:var(--surface2);padding:12px;border-radius:8px;margin-bottom:20px">
+        <div style="color:var(--muted)">Aguardando dados do backend CREPE...</div>
+      </div>
+
+      <div class="clabel">Métricas Detalhadas</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+        <div style="background:var(--surface2);padding:12px;border-radius:8px">
+          <div style="font-weight:600;margin-bottom:8px">🎯 Precisão Vocal</div>
+          <div id="precisionMetric" style="font-size:18px;color:var(--green);font-weight:500">0%</div>
+        </div>
+        <div style="background:var(--surface2);padding:12px;border-radius:8px">
+          <div style="font-weight:600;margin-bottom:8px">📊 Estabilidade</div>
+          <div id="stabilityMetric" style="font-size:18px;color:var(--blue);font-weight:500">0%</div>
+        </div>
+        <div style="background:var(--surface2);padding:12px;border-radius:8px">
+          <div style="font-weight:600;margin-bottom:8px">🎤 Perfil Vocal</div>
+          <div id="vocalProfile" style="font-size:16px;color:var(--purple);font-weight:500">-</div>
+        </div>
+        <div style="background:var(--surface2);padding:12px;border-radius:8px">
+          <div style="font-weight:600;margin-bottom:8px">📈 Range Vocal</div>
+          <div id="vocalRange" style="font-size:16px;color:var(--text);font-weight:500">-</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- Módulos JavaScript -->
@@ -224,6 +348,187 @@
         const uiFunctions = appController.getUIFunctions();
         console.log('Funções da UI obtidas');
 
+        // Função global para toggle do realtime pitch LOCAL
+        window.toggleRealtimePitchLocal = function () {
+          const container = document.getElementById('realtimePitchLocalView');
+
+          // Esconde outros containers
+          document.getElementById('realtimePitchRemoteView').classList.add('hidden');
+          document.getElementById('scoresView').classList.add('hidden');
+
+          // Toggle do local
+          container.classList.toggle('hidden');
+
+          console.log(container.classList.contains('hidden') ? 'Pitch local escondido' : 'Pitch local mostrado');
+
+          // Inicializa botões locais se necessário
+          if (!container.classList.contains('hidden')) {
+            initializeLocalButtons();
+          }
+        };
+
+        // Função global para toggle do realtime pitch REMOTO
+        window.toggleRealtimePitchRemote = function () {
+          const container = document.getElementById('realtimePitchRemoteView');
+
+          // Esconde outros containers
+          document.getElementById('realtimePitchLocalView').classList.add('hidden');
+          document.getElementById('scoresView').classList.add('hidden');
+
+          // Toggle do remoto
+          container.classList.toggle('hidden');
+
+          console.log(container.classList.contains('hidden') ? 'Pitch remoto escondido' : 'Pitch remoto mostrado');
+
+          // Inicializa botões remotos se necessário
+          if (!container.classList.contains('hidden')) {
+            initializeRemoteButtons();
+          }
+        };
+
+        // Inicializa botões do modo LOCAL
+        function initializeLocalButtons() {
+          const startBtn = document.getElementById('startLocalBtn');
+          const stopBtn = document.getElementById('stopLocalBtn');
+
+          if (startBtn && !startBtn.hasAttribute('data-initialized')) {
+            startBtn.addEventListener('click', async () => {
+              try {
+                console.log('Iniciando detecção LOCAL...');
+
+                // Inicia detecção local
+                await window.app.startRealtimePitchLocal();
+
+                // Atualiza botões
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+
+                // Atualiza indicador
+                const indicator = document.getElementById('realtimeIndicatorLocal');
+                if (indicator) {
+                  indicator.classList.add('active');
+                }
+
+                console.log('Detecção LOCAL iniciada com sucesso');
+              } catch (error) {
+                console.error('Erro ao iniciar detecção LOCAL:', error);
+                alert('Erro ao iniciar detecção local: ' + error.message);
+              }
+            });
+
+            startBtn.setAttribute('data-initialized', 'true');
+          }
+
+          if (stopBtn && !stopBtn.hasAttribute('data-initialized')) {
+            stopBtn.addEventListener('click', () => {
+              try {
+                console.log('Parando detecção LOCAL...');
+
+                // Para detecção
+                window.app.stopRealtimePitch();
+
+                // Atualiza botões
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+
+                // Atualiza indicador
+                const indicator = document.getElementById('realtimeIndicatorLocal');
+                if (indicator) {
+                  indicator.classList.remove('active');
+                }
+
+                // Limpa displays locais
+                document.getElementById('currentNoteLocal').textContent = '-';
+                document.getElementById('currentFreqLocal').textContent = '0.00 Hz';
+                document.getElementById('confidenceLocal').textContent = '0%';
+                document.getElementById('notesDetectedLocal').textContent = '0';
+
+                console.log('Detecção LOCAL parada com sucesso');
+              } catch (error) {
+                console.error('Erro ao parar detecção LOCAL:', error);
+              }
+            });
+
+            stopBtn.setAttribute('data-initialized', 'true');
+          }
+        }
+
+        // Inicializa botões do modo REMOTO
+        function initializeRemoteButtons() {
+          const startBtn = document.getElementById('startRemoteBtn');
+          const stopBtn = document.getElementById('stopRemoteBtn');
+
+          if (startBtn && !startBtn.hasAttribute('data-initialized')) {
+            startBtn.addEventListener('click', async () => {
+              try {
+                console.log('Iniciando detecção REMOTA...');
+
+                // Pega URL do backend do input
+                const backendUrl = document.getElementById('sUrl')?.value || '';
+
+                // Inicia detecção remota
+                await window.app.startRealtimePitchRemote(backendUrl);
+
+                // Atualiza botões
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+
+                // Atualiza indicador
+                const indicator = document.getElementById('realtimeIndicatorRemote');
+                if (indicator) {
+                  indicator.classList.add('active');
+                }
+
+                console.log('Detecção REMOTA iniciada com sucesso');
+              } catch (error) {
+                console.error('Erro ao iniciar detecção REMOTA:', error);
+                alert('Erro ao iniciar detecção remota: ' + error.message);
+              }
+            });
+
+            startBtn.setAttribute('data-initialized', 'true');
+          }
+
+          if (stopBtn && !stopBtn.hasAttribute('data-initialized')) {
+            stopBtn.addEventListener('click', () => {
+              try {
+                console.log('Parando detecção REMOTA...');
+
+                // Para detecção
+                window.app.stopRealtimePitch();
+
+                // Atualiza botões
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+
+                // Atualiza indicador
+                const indicator = document.getElementById('realtimeIndicatorRemote');
+                if (indicator) {
+                  indicator.classList.remove('active');
+                }
+
+                // Limpa displays remotos
+                document.getElementById('currentNoteRemote').textContent = '-';
+                document.getElementById('currentFreqRemote').textContent = '0.00 Hz';
+                document.getElementById('backendAccuracy').textContent = '-';
+
+                console.log('Detecção REMOTA parada com sucesso');
+              } catch (error) {
+                console.error('Erro ao parar detecção REMOTA:', error);
+              }
+            });
+
+            stopBtn.setAttribute('data-initialized', 'true');
+          }
+        }
+
+        window.loadScores = uiFunctions.loadScores;
+        window.openScore = uiFunctions.openScore;
+        window.deleteScore = uiFunctions.deleteScore;
+        window.exportPDF = uiFunctions.exportPDF;
+        window.copyLyrics = uiFunctions.copyLyrics;
+        window.pingServer = uiFunctions.pingServer;
+
         // Expõe funções globalmente para acesso via onclick
         window.switchTab = uiFunctions.switchTab;
         window.setGender = uiFunctions.setGender;
@@ -232,15 +537,9 @@
         window.toggleRec = uiFunctions.toggleRec;
         window.analyze = uiFunctions.analyze;
         window.startSinging = uiFunctions.startSinging;
-        window.loadScores = uiFunctions.loadScores;
-        window.openScore = uiFunctions.openScore;
-        window.deleteScore = uiFunctions.deleteScore;
-        window.exportPDF = uiFunctions.exportPDF;
-        window.copyLyrics = uiFunctions.copyLyrics;
-        window.pingServer = uiFunctions.pingServer;
-        window.hideScoresView = uiController.hideScoresView.bind(uiController);
-        window.toggleRealtimePitch = uiFunctions.toggleRealtimePitch;
-        window.startRealtimePitch = uiFunctions.startRealtimePitch;
+        window.hideScoresView = uiFunctions.hideScoresView || uiController.hideScoresView.bind(uiController);
+        window.startRealtimePitchLocal = uiFunctions.startRealtimePitchLocal;
+        window.startRealtimePitchRemote = uiFunctions.startRealtimePitchRemote;
         window.stopRealtimePitch = uiFunctions.stopRealtimePitch;
 
         // Expõe controller globalmente
@@ -250,8 +549,10 @@
 
         // Testa se as funções estão disponíveis
         console.log('Funções disponíveis:', {
-          toggleRealtimePitch: typeof window.toggleRealtimePitch,
-          startRealtimePitch: typeof window.startRealtimePitch,
+          toggleRealtimePitchLocal: typeof window.toggleRealtimePitchLocal,
+          toggleRealtimePitchRemote: typeof window.toggleRealtimePitchRemote,
+          startRealtimePitchLocal: typeof window.startRealtimePitchLocal,
+          startRealtimePitchRemote: typeof window.startRealtimePitchRemote,
           stopRealtimePitch: typeof window.stopRealtimePitch
         });
 

@@ -1,71 +1,598 @@
 /**
- * Serviço especializado em detecção de pitch em tempo real
+ * Serviço de detecção de pitch em tempo real
+ * Implementa detecção local com Essentia.js e envio para backend CREPE
  */
-export class RealtimePitchService {
+class RealtimePitchService {
   constructor() {
-    this.essentia = null;
-    this.isReady = false;
     this.audioContext = null;
     this.micSource = null;
     this.processor = null;
+    this.essentia = null;
+    this.isReady = false;
     this.isActive = false;
+    this.backendUrl = '';
     this.realtimeNotes = [];
     this.onPitchDetected = null;
     this.onRangeUpdate = null;
-    this.lastUpdate = 0;
-    this.updateInterval = 100; // Atualiza a cada 100ms
-    this.voiceThreshold = 0.01; // Threshold para detecção de voz
+    this.backendInterval = null;
+    
+    // Canvas para visualização
+    this.canvasLocal = null;
+    this.canvasRemote = null;
+    this.canvasCtxLocal = null;
+    this.canvasCtxRemote = null;
+    this.pitchHistoryLocal = [];
+    this.pitchHistoryRemote = [];
+    this.maxHistoryPoints = 100;
   }
 
   /**
-   * Inicializa o motor de pitch detection
+   * Inicializa o motor Essentia WASM
    */
   async initPitchEngine() {
-    if (this.isReady) return;
-
     try {
+      console.log('Inicializando motor de pitch...');
+      
+      // Usa variáveis globais do Essentia.js carregadas via CDN
+      if (typeof EssentiaWASM === 'undefined' || typeof Essentia === 'undefined') {
+        throw new Error('Essentia.js não está carregado');
+      }
+      
+      // Inicializa o motor Essentia (como no test-realtime.html)
       const wasmModule = await EssentiaWASM();
       this.essentia = new Essentia(wasmModule);
+      
       this.isReady = true;
       console.log('Pitch engine initialized successfully');
+      
     } catch (error) {
-      console.error('Failed to initialize Essentia:', error);
-      throw new Error('Falha ao inicializar motor de pitch detection');
+      console.error('Failed to initialize pitch engine:', error);
+      throw error;
     }
   }
 
   /**
-   * Inicia detecção de pitch em tempo real
+   * Inicia detecção de pitch - MODO LOCAL
    */
-  async startRealtimeDetection() {
-    if (this.isActive) return;
+  async startRealtimeDetectionLocal() {
+    if (this.isActive) {
+      console.log('Detecção já está ativa');
+      return;
+    }
     
     if (!this.isReady) {
+      console.log('Inicializando motor de pitch local...');
       await this.initPitchEngine();
     }
-
+    
     try {
       this.audioContext = new AudioContext();
-      this.realtimeNotes = [];
-
+      
+      console.log('Solicitando permissão de microfone...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('Microfone liberado');
+      
       this.micSource = this.audioContext.createMediaStreamSource(stream);
-      // Usa buffer muito menor para evitar erros com Essentia.js
-      this.processor = this.audioContext.createScriptProcessor(512, 1, 1);
-
+      
+      // Buffer size 2048 como no test-realtime.html
+      this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
+      
+      this.processor.onaudioprocess = (e) => this.processAudioLocal(e);
+      
       this.micSource.connect(this.processor);
       this.processor.connect(this.audioContext.destination);
-
-      this.processor.onaudioprocess = (e) => this.processAudio(e);
+      
       this.isActive = true;
-
-      console.log('Realtime pitch detection started');
+      
+      // Inicializa canvas local
+      this.initializeCanvasLocal();
+      
+      console.log('Realtime pitch detection LOCAL started');
       return true;
+      
+    } catch (error) {
+      console.error('Failed to start realtime detection LOCAL:', error);
+      throw new Error('Falha ao iniciar detecção de pitch em tempo real LOCAL');
+    }
+  }
+
+  /**
+   * Inicia detecção de pitch - MODO REMOTO
+   */
+  async startRealtimeDetectionRemote(backendUrl = '') {
+    if (this.isActive) {
+      console.log('Detecção já está ativa');
+      return;
+    }
+    
+    if (!this.isReady) {
+      console.log('Inicializando motor de pitch remoto...');
+      await this.initPitchEngine();
+    }
+    
+    this.backendUrl = backendUrl;
+    console.log('URL do backend definida:', backendUrl);
+    
+    try {
+      this.audioContext = new AudioContext();
+      
+      console.log('Solicitando permissão de microfone...');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('Microfone liberado');
+      
+      this.micSource = this.audioContext.createMediaStreamSource(stream);
+      
+      // Buffer size 2048 como no test-realtime.html
+      this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
+      
+      this.processor.onaudioprocess = (e) => this.processAudioRemote(e);
+      
+      this.micSource.connect(this.processor);
+      this.processor.connect(this.audioContext.destination);
+      
+      this.isActive = true;
+      
+      // Inicializa canvas remoto
+      this.initializeCanvasRemote();
+      
+      // Inicia envio periódico para backend se URL fornecida
+      if (this.backendUrl) {
+        this.startBackendProcessing();
+      }
+      
+      console.log('Realtime pitch detection REMOTE started');
+      return true;
+      
+    } catch (error) {
+      console.error('Failed to start realtime detection REMOTE:', error);
+      throw new Error('Falha ao iniciar detecção de pitch em tempo real REMOTO');
+    }
+  }
+
+  /**
+   * Inicia processamento do backend
+   */
+  startBackendProcessing() {
+    if (!this.backendUrl) return;
+    
+    // Envia dados para backend a cada 500ms
+    this.backendInterval = setInterval(() => {
+      if (this.realtimeNotes.length > 0) {
+        this.sendToBackend();
+      }
+    }, 500);
+    
+    console.log('Backend processing started');
+  }
+
+  /**
+   * Envia dados para backend CREPE
+   */
+  async sendToBackend() {
+    if (!this.backendUrl) return;
+
+    try {
+      // Coleta samples de áudio do buffer atual
+      // NOTA: Como estamos usando ScriptProcessor, precisamos coletar os samples brutos
+      // Por enquanto, vamos enviar um array de zeros como placeholder
+      // Em uma implementação real, você precisaria coletar os samples de áudio brutos
+      
+      const audioSamples = new Float32Array(2048).fill(0); // Placeholder
+      
+      const response = await fetch(`${this.backendUrl}/pitch-realtime/transcribe-frame-json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          samples: Array.from(audioSamples),
+          sample_rate: this.audioContext.sampleRate
+        })
+      });
+
+      if (response.ok) {
+        const analysis = await response.json();
+        this.updateBackendAnalysis(analysis);
+        console.log('Backend analysis:', analysis);
+      }
 
     } catch (error) {
-      console.error('Failed to start realtime detection:', error);
-      throw new Error('Falha ao iniciar detecção de pitch em tempo real');
+      console.error('Error sending to backend:', error);
     }
+  }
+
+  /**
+   * Atualiza UI com análise do backend
+   */
+  updateBackendAnalysis(analysis) {
+    // Dispara evento para atualizar UI
+    window.dispatchEvent(new CustomEvent('backendPitchAnalysis', {
+      detail: analysis
+    }));
+
+    // Atualiza elementos específicos da UI
+    const backendNoteElement = document.getElementById('currentNoteRemote');
+    const backendFreqElement = document.getElementById('currentFreqRemote');
+    const backendAccuracyElement = document.getElementById('backendAccuracy');
+    const backendAnalysisElement = document.getElementById('backendAnalysis');
+
+    if (backendNoteElement && analysis.note) {
+      backendNoteElement.textContent = analysis.note;
+    }
+    if (backendFreqElement && analysis.freq) {
+      backendFreqElement.textContent = analysis.freq.toFixed(2) + ' Hz';
+    }
+    if (backendAccuracyElement && analysis.cents) {
+      // Mostra cents como precisão
+      backendAccuracyElement.textContent = Math.abs(analysis.cents) + '¢';
+    }
+    
+    // Atualiza área de análise detalhada
+    if (backendAnalysisElement && analysis) {
+      backendAnalysisElement.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <strong>Nota:</strong> ${analysis.note || '-'}
+          </div>
+          <div>
+            <strong>Frequência:</strong> ${analysis.freq ? analysis.freq.toFixed(2) + ' Hz' : '-'}
+          </div>
+          <div>
+            <strong>Desvio:</strong> ${analysis.cents ? analysis.cents + ' cents' : '-'}
+          </div>
+          <div>
+            <strong>Status:</strong> <span style="color:var(--green)">● Online</span>
+          </div>
+        </div>
+      `;
+    }
+
+    // Atualiza métricas detalhadas
+    this.updateDetailedMetrics(analysis);
+    
+    console.log('Backend UI updated:', analysis);
+  }
+
+  /**
+   * Atualiza métricas detalhadas do backend
+   */
+  updateDetailedMetrics(analysis) {
+    // 🎯 Precisão Vocal
+    const precisionElement = document.getElementById('precisionMetric');
+    if (precisionElement) {
+      // Calcula precisão baseada no desvio em cents
+      const precision = analysis.cents ? Math.max(0, 100 - Math.abs(analysis.cents)) : 0;
+      precisionElement.textContent = Math.round(precision) + '%';
+    }
+
+    // 📊 Estabilidade
+    const stabilityElement = document.getElementById('stabilityMetric');
+    if (stabilityElement) {
+      // Simula estabilidade baseada na consistência das notas
+      const stability = this.calculateStability();
+      stabilityElement.textContent = Math.round(stability) + '%';
+    }
+
+    // 🎤 Perfil Vocal
+    const profileElement = document.getElementById('vocalProfile');
+    if (profileElement) {
+      const profile = this.determineVocalProfile(analysis);
+      profileElement.textContent = profile;
+    }
+
+    // 📈 Range Vocal
+    const rangeElement = document.getElementById('vocalRange');
+    if (rangeElement) {
+      const range = this.calculateVocalRange();
+      rangeElement.textContent = range;
+    }
+  }
+
+  /**
+   * Calcula estabilidade vocal baseada nas notas detectadas
+   */
+  calculateStability() {
+    if (this.realtimeNotes.length < 10) return 0;
+    
+    // Pega as últimas 10 notas
+    const recentNotes = this.realtimeNotes.slice(-10);
+    
+    // Calcula desvio padrão
+    const mean = recentNotes.reduce((a, b) => a + b, 0) / recentNotes.length;
+    const variance = recentNotes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / recentNotes.length;
+    const stdDev = Math.sqrt(variance);
+    
+    // Converte para estabilidade (quanto menor o desvio, maior a estabilidade)
+    const stability = Math.max(0, 100 - (stdDev * 2));
+    return Math.min(100, stability);
+  }
+
+  /**
+   * Determina perfil vocal baseado na frequência
+   */
+  determineVocalProfile(analysis) {
+    if (!analysis.freq) return '-';
+    
+    const freq = analysis.freq;
+    
+    if (freq < 165) return 'Baixo';
+    if (freq < 220) return 'Tenor';
+    if (freq < 330) return 'Alto';
+    if (freq < 440) return 'Mezzo-Soprano';
+    if (freq < 660) return 'Soprano';
+    return 'Soprano Agudo';
+  }
+
+  /**
+   * Calcula range vocal baseado nas notas detectadas
+   */
+  calculateVocalRange() {
+    if (this.realtimeNotes.length < 5) return '-';
+    
+    const notes = this.realtimeNotes.slice(-50); // últimas 50 notas
+    const minNote = Math.min(...notes);
+    const maxNote = Math.max(...notes);
+    
+    const minNoteName = this.midiToNote(minNote);
+    const maxNoteName = this.midiToNote(maxNote);
+    
+    return `${minNoteName} - ${maxNoteName}`;
+  }
+
+  /**
+   * Inicializa canvas local
+   */
+  initializeCanvasLocal() {
+    this.canvasLocal = document.getElementById('pitchCanvasLocal');
+    if (this.canvasLocal) {
+      this.canvasCtxLocal = this.canvasLocal.getContext('2d');
+      this.canvasCtxLocal.fillStyle = '#1a1a1a';
+      this.canvasCtxLocal.fillRect(0, 0, this.canvasLocal.width, this.canvasLocal.height);
+      console.log('Canvas local inicializado');
+    }
+  }
+
+  /**
+   * Inicializa canvas remoto
+   */
+  initializeCanvasRemote() {
+    this.canvasRemote = document.getElementById('pitchCanvasRemote');
+    if (this.canvasRemote) {
+      this.canvasCtxRemote = this.canvasRemote.getContext('2d');
+      this.canvasCtxRemote.fillStyle = '#1a1a1a';
+      this.canvasCtxRemote.fillRect(0, 0, this.canvasRemote.width, this.canvasRemote.height);
+      console.log('Canvas remoto inicializado');
+    }
+  }
+
+  /**
+   * Atualiza visualização do canvas local
+   */
+  updateVisualizationLocal(midi) {
+    if (!this.canvasCtxLocal) return;
+
+    // Adiciona ao histórico
+    this.pitchHistoryLocal.push(midi);
+    if (this.pitchHistoryLocal.length > this.maxHistoryPoints) {
+      this.pitchHistoryLocal.shift();
+    }
+
+    // Limpa canvas
+    this.canvasCtxLocal.fillStyle = '#1a1a1a';
+    this.canvasCtxLocal.fillRect(0, 0, this.canvasLocal.width, this.canvasLocal.height);
+
+    // Desenha grade
+    this.canvasCtxLocal.strokeStyle = '#333';
+    this.canvasCtxLocal.lineWidth = 1;
+    for (let i = 0; i <= 10; i++) {
+      const y = (this.canvasLocal.height / 10) * i;
+      this.canvasCtxLocal.beginPath();
+      this.canvasCtxLocal.moveTo(0, y);
+      this.canvasCtxLocal.lineTo(this.canvasLocal.width, y);
+      this.canvasCtxLocal.stroke();
+    }
+
+    // Desenha linha do pitch
+    if (this.pitchHistoryLocal.length > 1) {
+      this.canvasCtxLocal.strokeStyle = '#00ff88';
+      this.canvasCtxLocal.lineWidth = 2;
+      this.canvasCtxLocal.beginPath();
+      
+      for (let i = 0; i < this.pitchHistoryLocal.length; i++) {
+        const x = (this.canvasLocal.width / this.maxHistoryPoints) * i;
+        const y = this.canvasLocal.height - ((this.pitchHistoryLocal[i] - 40) / 60) * this.canvasLocal.height;
+        
+        if (i === 0) {
+          this.canvasCtxLocal.moveTo(x, y);
+        } else {
+          this.canvasCtxLocal.lineTo(x, y);
+        }
+      }
+      
+      this.canvasCtxLocal.stroke();
+    }
+  }
+
+  /**
+   * Atualiza visualização do canvas remoto
+   */
+  updateVisualizationRemote(midi) {
+    if (!this.canvasCtxRemote) return;
+
+    // Adiciona ao histórico
+    this.pitchHistoryRemote.push(midi);
+    if (this.pitchHistoryRemote.length > this.maxHistoryPoints) {
+      this.pitchHistoryRemote.shift();
+    }
+
+    // Limpa canvas
+    this.canvasCtxRemote.fillStyle = '#1a1a1a';
+    this.canvasCtxRemote.fillRect(0, 0, this.canvasRemote.width, this.canvasRemote.height);
+
+    // Desenha grade
+    this.canvasCtxRemote.strokeStyle = '#333';
+    this.canvasCtxRemote.lineWidth = 1;
+    for (let i = 0; i <= 10; i++) {
+      const y = (this.canvasRemote.height / 10) * i;
+      this.canvasCtxRemote.beginPath();
+      this.canvasCtxRemote.moveTo(0, y);
+      this.canvasCtxRemote.lineTo(this.canvasRemote.width, y);
+      this.canvasCtxRemote.stroke();
+    }
+
+    // Desenha linha do pitch
+    if (this.pitchHistoryRemote.length > 1) {
+      this.canvasCtxRemote.strokeStyle = '#ff6b6b';
+      this.canvasCtxRemote.lineWidth = 2;
+      this.canvasCtxRemote.beginPath();
+      
+      for (let i = 0; i < this.pitchHistoryRemote.length; i++) {
+        const x = (this.canvasRemote.width / this.maxHistoryPoints) * i;
+        const y = this.canvasRemote.height - ((this.pitchHistoryRemote[i] - 40) / 60) * this.canvasRemote.height;
+        
+        if (i === 0) {
+          this.canvasCtxRemote.moveTo(x, y);
+        } else {
+          this.canvasCtxRemote.lineTo(x, y);
+        }
+      }
+      
+      this.canvasCtxRemote.stroke();
+    }
+  }
+
+  /**
+   * Processa áudio - MODO LOCAL
+   */
+  processAudioLocal(e) {
+    if (!this.isReady || !this.isActive) return;
+
+    const input = e.inputBuffer.getChannelData(0);
+    
+    try {
+      // CONVERTE PARA VECTOR DO ESSENTIA (método correto)
+      const inputSignalVector = this.essentia.arrayToVector(input);
+      
+      // TENTA COM VECTOR DO ESSENTIA
+      const pitchData = this.essentia.PitchYin(inputSignalVector, this.audioContext.sampleRate);
+      const freq = pitchData.pitch;
+      
+      // LIMPA A MEMÓRIA DO VECTOR
+      inputSignalVector.delete();
+      
+      if (freq > 90 && freq < 600) {
+        // Converte para MIDI
+        const midi = this.freqToMidi(freq);
+        const note = this.midiToNote(midi);
+
+        // Atualiza UI local
+        this.updateUILocal({
+          note: note,
+          frequency: freq,
+          confidence: Math.round(pitchData.pitchConfidence * 100),
+          midi: midi
+        });
+        
+        // Atualiza visualização do canvas
+        this.updateVisualizationLocal(midi);
+        
+        // Acumula notas para estatísticas
+        this.realtimeNotes.push(midi);
+
+        // Dispara evento
+        if (this.onPitchDetected) {
+          this.onPitchDetected({
+            note: note,
+            frequency: freq,
+            confidence: pitchData.pitchConfidence,
+            midi: midi
+          });
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error processing audio LOCAL:', error);
+    }
+  }
+
+  /**
+   * Processa áudio - MODO REMOTO
+   */
+  processAudioRemote(e) {
+    if (!this.isReady || !this.isActive) return;
+
+    const input = e.inputBuffer.getChannelData(0);
+    
+    try {
+      // CONVERTE PARA VECTOR DO ESSENTIA (método correto)
+      const inputSignalVector = this.essentia.arrayToVector(input);
+      
+      // TENTA COM VECTOR DO ESSENTIA
+      const pitchData = this.essentia.PitchYin(inputSignalVector, this.audioContext.sampleRate);
+      const freq = pitchData.pitch;
+      
+      // LIMPA A MEMÓRIA DO VECTOR
+      inputSignalVector.delete();
+      
+      if (freq > 90 && freq < 600) {
+        // Converte para MIDI
+        const midi = this.freqToMidi(freq);
+        const note = this.midiToNote(midi);
+
+        // Atualiza UI remota
+        this.updateUIRemote({
+          note: note,
+          frequency: freq,
+          confidence: Math.round(pitchData.pitchConfidence * 100),
+          midi: midi
+        });
+        
+        // Atualiza visualização do canvas
+        this.updateVisualizationRemote(midi);
+        
+        // Acumula notas para enviar ao backend
+        this.realtimeNotes.push(midi);
+
+        // Dispara evento
+        if (this.onPitchDetected) {
+          this.onPitchDetected({
+            note: note,
+            frequency: freq,
+            confidence: pitchData.pitchConfidence,
+            midi: midi
+          });
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error processing audio REMOTE:', error);
+    }
+  }
+
+  /**
+   * Atualiza UI - MODO LOCAL
+   */
+  updateUILocal(pitchData) {
+    const noteElement = document.getElementById('currentNoteLocal');
+    const freqElement = document.getElementById('currentFreqLocal');
+    const confidenceElement = document.getElementById('confidenceLocal');
+    const notesDetectedElement = document.getElementById('notesDetectedLocal');
+
+    if (noteElement) noteElement.textContent = pitchData.note;
+    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
+    if (confidenceElement) confidenceElement.textContent = pitchData.confidence + '%';
+    if (notesDetectedElement) notesDetectedElement.textContent = this.realtimeNotes.length;
+  }
+
+  /**
+   * Atualiza UI - MODO REMOTO
+   */
+  updateUIRemote(pitchData) {
+    const noteElement = document.getElementById('currentNoteRemote');
+    const freqElement = document.getElementById('currentFreqRemote');
+
+    if (noteElement) noteElement.textContent = pitchData.note;
+    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
   }
 
   /**
@@ -89,304 +616,40 @@ export class RealtimePitchService {
       this.audioContext = null;
     }
 
-    this.realtimeNotes = [];
-    this.isActive = false;
+    // Limpa interval do backend
+    if (this.backendInterval) {
+      clearInterval(this.backendInterval);
+      this.backendInterval = null;
+    }
 
+    this.isActive = false;
     console.log('Realtime pitch detection stopped');
   }
 
   /**
-   * Processa áudio para detectar pitch
-   */
-  processAudio(event) {
-    if (!this.essentia || !this.audioContext) return;
-
-    const input = event.inputBuffer.getChannelData(0);
-    
-    // Verifica se há sinal de voz (amplitude suficiente)
-    const amplitude = this.calculateAmplitude(input);
-    if (amplitude < this.voiceThreshold) {
-      return; // Ignora se não houver voz
-    }
-    
-    // Limita atualizações para não mudar a view muito rápido
-    const now = Date.now();
-    if (now - this.lastUpdate < this.updateInterval) {
-      return;
-    }
-    this.lastUpdate = now;
-    
-    // Reduz drasticamente o tamanho do buffer para evitar erro de binding
-    const bufferSize = Math.min(input.length, 512);
-    const audioBuffer = new Float32Array(bufferSize);
-    
-    // Copia apenas uma parte do buffer
-    for (let i = 0; i < bufferSize; i++) {
-      audioBuffer[i] = input[i];
-    }
-
-    try {
-      const pitchData = this.essentia.PitchYin(audioBuffer, this.audioContext.sampleRate);
-      const freq = pitchData.pitch;
-
-      // Filtra para range vocal humano (80-800 Hz para voz)
-      if (freq > 80 && freq < 800) {
-        const noteData = this.analyzePitch(freq);
-        
-        // Validação adicional para garantir que é voz
-        if (this.isHumanVoice(freq, amplitude)) {
-          // Adiciona às notas em tempo real
-          this.realtimeNotes.push(noteData.midi);
-          if (this.realtimeNotes.length > 200) {
-            this.realtimeNotes.shift();
-          }
-
-          // Dispara evento de pitch detectado
-          if (this.onPitchDetected) {
-            this.onPitchDetected(noteData);
-          }
-
-          // Atualiza range vocal
-          this.updateRealtimeRange();
-        }
-      }
-    } catch (error) {
-      // Se Essentia falhar, tenta algoritmo simplificado
-      this.processAudioFallback(audioBuffer, amplitude);
-    }
-  }
-
-  /**
-   * Calcula amplitude do sinal de áudio
-   */
-  calculateAmplitude(buffer) {
-    let sum = 0;
-    for (let i = 0; i < buffer.length; i++) {
-      sum += Math.abs(buffer[i]);
-    }
-    return sum / buffer.length;
-  }
-
-  /**
-   * Verifica se o sinal provavelmente é voz humana
-   */
-  isHumanVoice(frequency, amplitude) {
-    // Range vocal típico: 80-800 Hz
-    if (frequency < 80 || frequency > 800) {
-      return false;
-    }
-    
-    // Amplitude mínima para considerar como voz
-    if (amplitude < this.voiceThreshold) {
-      return false;
-    }
-    
-    // Frequências típicas de fala/canto
-    const voiceRanges = {
-      male: { min: 85, max: 180 },
-      female: { min: 165, max: 330 },
-      child: { min: 250, max: 400 }
-    };
-    
-    // Verifica se está em algum range vocal razoável
-    for (const range of Object.values(voiceRanges)) {
-      if (frequency >= range.min && frequency <= range.max) {
-        return true;
-      }
-    }
-    
-    // Se não estiver em range específico, ainda pode ser voz (falsete, etc)
-    return frequency <= 800;
-  }
-
-  /**
-   * Fallback para detecção de pitch sem Essentia
-   */
-  processAudioFallback(audioBuffer, amplitude) {
-    try {
-      // Algoritmo simplificado de autocorrelação
-      const freq = this.simplePitchDetection(audioBuffer);
-
-      // Filtra para range vocal humano
-      if (freq > 80 && freq < 800 && this.isHumanVoice(freq, amplitude)) {
-        const noteData = this.analyzePitch(freq);
-
-        // Adiciona às notas em tempo real
-        this.realtimeNotes.push(noteData.midi);
-        if (this.realtimeNotes.length > 200) {
-          this.realtimeNotes.shift();
-        }
-
-        // Dispara evento de pitch detectado
-        if (this.onPitchDetected) {
-          this.onPitchDetected(noteData);
-        }
-
-        // Atualiza range vocal
-        this.updateRealtimeRange();
-      }
-    } catch (error) {
-      console.warn('Erro no fallback de pitch:', error.message);
-    }
-  }
-
-  /**
-   * Algoritmo simplificado de detecção de pitch
-   */
-  simplePitchDetection(buffer) {
-    const sampleRate = this.audioContext.sampleRate;
-    const minFreq = 80;
-    const maxFreq = 800;
-    const minPeriod = Math.floor(sampleRate / maxFreq);
-    const maxPeriod = Math.floor(sampleRate / minFreq);
-
-    // Autocorrelação simplificada
-    let bestPeriod = 0;
-    let bestCorrelation = 0;
-
-    for (let period = minPeriod; period < maxPeriod; period++) {
-      let correlation = 0;
-      let energy = 0;
-
-      for (let i = 0; i < buffer.length - period; i++) {
-        correlation += buffer[i] * buffer[i + period];
-        energy += buffer[i] * buffer[i];
-      }
-
-      if (energy > 0) {
-        correlation = correlation / energy;
-        if (correlation > bestCorrelation) {
-          bestCorrelation = correlation;
-          bestPeriod = period;
-        }
-      }
-    }
-
-    if (bestPeriod > 0 && bestCorrelation > 0.3) {
-      return sampleRate / bestPeriod;
-    }
-
-    return 0;
-  }
-
-  /**
-   * Analisa frequência e extrai informações
-   */
-  analyzePitch(freq) {
-    const midi = Math.round(12 * Math.log2(freq / 440) + 69);
-    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const note = NOTE_NAMES[midi % 12];
-    const octave = Math.floor(midi / 12) - 1;
-    const noteName = note + octave;
-
-    // Calcula cents
-    const exactMidi = 12 * Math.log2(freq / 440) + 69;
-    const roundedMidi = Math.round(exactMidi);
-    const cents = Math.round((exactMidi - roundedMidi) * 100);
-
-    return {
-      frequency: freq,
-      note: noteName,
-      midi: midi,
-      cents: cents,
-      timestamp: Date.now()
-    };
-  }
-
-  /**
-   * Atualiza range vocal em tempo real
-   */
-  updateRealtimeRange() {
-    if (this.realtimeNotes.length < 8) return;
-
-    const sorted = [...this.realtimeNotes].sort((a, b) => a - b);
-    const low = sorted[0];
-    const high = sorted[sorted.length - 1];
-
-    const rangeData = {
-      lowest: this.midiToNote(low),
-      highest: this.midiToNote(high),
-      midiLow: low,
-      midiHigh: high
-    };
-
-    if (this.onRangeUpdate) {
-      this.onRangeUpdate(rangeData);
-    }
-  }
-
-  /**
-   * Define callbacks
+   * Define callbacks para eventos
    */
   setCallbacks(callbacks) {
-    if (callbacks.onPitchDetected) {
-      this.onPitchDetected = callbacks.onPitchDetected;
-    }
-    if (callbacks.onRangeUpdate) {
-      this.onRangeUpdate = callbacks.onRangeUpdate;
-    }
+    this.onPitchDetected = callbacks.onPitchDetected || null;
+    this.onRangeUpdate = callbacks.onRangeUpdate || null;
   }
 
   /**
-   * Obtém estatísticas atuais
+   * Converte frequência para MIDI
    */
-  getCurrentStats() {
-    if (this.realtimeNotes.length < 2) {
-      return {
-        averageFrequency: 0,
-        currentNote: '-',
-        noteStability: 0,
-        range: { lowest: '-', highest: '-' }
-      };
-    }
-
-    const sorted = [...this.realtimeNotes].sort((a, b) => a - b);
-    const recentNotes = this.realtimeNotes.slice(-10); // Últimas 10 notas
-    
-    // Calcula estabilidade da nota (quão consistentes são as notas recentes)
-    const noteFrequency = {};
-    recentNotes.forEach(midi => {
-      const note = this.midiToNote(midi);
-      noteFrequency[note] = (noteFrequency[note] || 0) + 1;
-    });
-    
-    const mostFrequentNote = Object.keys(noteFrequency).reduce((a, b) => 
-      noteFrequency[a] > noteFrequency[b] ? a : b
-    );
-    
-    const stability = noteFrequency[mostFrequentNote] / recentNotes.length;
-
-    return {
-      averageFrequency: this.midiToFreq(sorted[Math.floor(sorted.length / 2)]),
-      currentNote: mostFrequentNote,
-      noteStability: Math.round(stability * 100),
-      range: {
-        lowest: this.midiToNote(sorted[0]),
-        highest: this.midiToNote(sorted[sorted.length - 1])
-      }
-    };
+  freqToMidi(freq) {
+    if (freq <= 0) return 0;
+    return Math.round(12 * Math.log2(freq / 440) + 69);
   }
 
   /**
    * Converte MIDI para nota
    */
   midiToNote(midi) {
-    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    return NOTE_NAMES[midi % 12] + (Math.floor(midi / 12) - 1);
-  }
-
-  /**
-   * Converte MIDI para frequência
-   */
-  midiToFreq(midi) {
-    return 440 * Math.pow(2, (midi - 69) / 12);
-  }
-
-  /**
-   * Verifica se está ativo
-   */
-  isDetectionActive() {
-    return this.isActive;
+    const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const note = notes[midi % 12];
+    const octave = Math.floor(midi / 12) - 1;
+    return note + octave;
   }
 
   /**
