@@ -10,6 +10,7 @@ import { realtimePitchService } from '../services/RealtimePitchService.js';
 import { uiController } from '../ui/UIController.js';
 import { realtimePitchUI } from '../ui/RealtimePitchUI.js';
 import { midiToNote } from '../utils/NoteUtils.js';
+import { PitchBuffer } from "../PitchBuffer.js"
 
 export class AppController {
 
@@ -20,6 +21,7 @@ export class AppController {
 
     this.initializeEventHandlers()
     this.initializeRealtimePitch()
+    this.pitchBuffer = new PitchBuffer(5)
 
   }
 
@@ -305,10 +307,11 @@ export class AppController {
 
       const input = e.inputBuffer.getChannelData(0)
 
-      const freq = pitchService.detectPitch(
-        input,
-        audioService.audioContext.sampleRate
-      )
+      let freq = pitchService.detectPitch(input, sampleRate)
+
+      freq = this.pitchBuffer.add(freq)
+
+      if (!freq) return
 
       if (freq > 70 && freq < 1000) {
 

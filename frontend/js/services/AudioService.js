@@ -20,9 +20,16 @@ export class AudioService {
       this.audioContext = new AudioContext();
       const source = this.audioContext.createMediaStreamSource(stream);
 
-      this.analyserNode = this.audioContext.createAnalyser();
-      this.analyserNode.fftSize = 256;
-      source.connect(this.analyserNode);
+      const filter = this.audioContext.createBiquadFilter()
+
+      filter.type = "highpass"
+      filter.frequency.value = 80
+
+      source.connect(filter)
+
+      // this.analyserNode = this.audioContext.createAnalyser();
+      // this.analyserNode.fftSize = 256;
+      // source.connect(this.analyserNode);
 
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
