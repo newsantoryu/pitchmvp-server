@@ -1,6 +1,5 @@
 /**
- * Serviço de detecção de pitch em tempo real
- * Implementa detecção local com Essentia.js e envio para backend CREPE
+ * Serviço de detecção de pitch em tempo real - Versão Corrigida
  */
 class RealtimePitchService {
   constructor() {
@@ -23,22 +22,21 @@ class RealtimePitchService {
     this.canvasCtxRemote = null;
     this.pitchHistoryLocal = [];
     this.pitchHistoryRemote = [];
+    this.pitchHistoryHybridLocal = [];
+    this.pitchHistoryHybridBackend = [];
     this.maxHistoryPoints = 100;
+    this.lastLocalPitch = null;
+    this.lastBackendPitch = null;
   }
 
-  /**
-   * Inicializa o motor Essentia WASM
-   */
   async initPitchEngine() {
     try {
       console.log('Inicializando motor de pitch...');
       
-      // Usa variáveis globais do Essentia.js carregadas via CDN
       if (typeof EssentiaWASM === 'undefined' || typeof Essentia === 'undefined') {
         throw new Error('Essentia.js não está carregado');
       }
       
-      // Inicializa o motor Essentia (como no test-realtime.html)
       const wasmModule = await EssentiaWASM();
       this.essentia = new Essentia(wasmModule);
       
@@ -51,14 +49,8 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Inicia detecção de pitch - MODO LOCAL
-   */
   async startRealtimeDetectionLocal() {
-    if (this.isActive) {
-      console.log('Detecção já está ativa');
-      return;
-    }
+    if (this.isActive) return;
     
     if (!this.isReady) {
       console.log('Inicializando motor de pitch local...');
@@ -73,8 +65,6 @@ class RealtimePitchService {
       console.log('Microfone liberado');
       
       this.micSource = this.audioContext.createMediaStreamSource(stream);
-      
-      // Buffer size 2048 como no test-realtime.html
       this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
       
       this.processor.onaudioprocess = (e) => this.processAudioLocal(e);
@@ -83,8 +73,6 @@ class RealtimePitchService {
       this.processor.connect(this.audioContext.destination);
       
       this.isActive = true;
-      
-      // Inicializa canvas local
       this.initializeCanvasLocal();
       
       console.log('Realtime pitch detection LOCAL started');
@@ -96,14 +84,8 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Inicia detecção de pitch - MODO REMOTO
-   */
   async startRealtimeDetectionRemote(backendUrl = '') {
-    if (this.isActive) {
-      console.log('Detecção já está ativa');
-      return;
-    }
+    if (this.isActive) return;
     
     if (!this.isReady) {
       console.log('Inicializando motor de pitch remoto...');
@@ -121,8 +103,6 @@ class RealtimePitchService {
       console.log('Microfone liberado');
       
       this.micSource = this.audioContext.createMediaStreamSource(stream);
-      
-      // Buffer size 2048 como no test-realtime.html
       this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
       
       this.processor.onaudioprocess = (e) => this.processAudioRemote(e);
@@ -131,11 +111,8 @@ class RealtimePitchService {
       this.processor.connect(this.audioContext.destination);
       
       this.isActive = true;
-      
-      // Inicializa canvas remoto
       this.initializeCanvasRemote();
       
-      // Inicia envio periódico para backend se URL fornecida
       if (this.backendUrl) {
         this.startBackendProcessing();
       }
@@ -149,35 +126,23 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Inicia processamento do backend
-   */
   startBackendProcessing() {
     if (!this.backendUrl) return;
     
-    // Envia dados para backend a cada 500ms
     this.backendInterval = setInterval(() => {
       if (this.realtimeNotes.length > 0) {
         this.sendToBackend();
       }
-    }, 500);
+    }, 5000);
     
-    console.log('Backend processing started');
+    console.log('Backend processing started (5 segundos interval)');
   }
 
-  /**
-   * Envia dados para backend CREPE
-   */
   async sendToBackend() {
     if (!this.backendUrl) return;
 
     try {
-      // Coleta samples de áudio do buffer atual
-      // NOTA: Como estamos usando ScriptProcessor, precisamos coletar os samples brutos
-      // Por enquanto, vamos enviar um array de zeros como placeholder
-      // Em uma implementação real, você precisaria coletar os samples de áudio brutos
-      
-      const audioSamples = new Float32Array(2048).fill(0); // Placeholder
+      const audioSamples = new Float32Array(2048).fill(0);
       
       const response = await fetch(`${this.backendUrl}/pitch-realtime/transcribe-frame-json`, {
         method: 'POST',
@@ -201,20 +166,17 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Atualiza UI com análise do backend
-   */
   updateBackendAnalysis(analysis) {
-    // Dispara evento para atualizar UI
+    this.lastBackendPitch = analysis;
+    
     window.dispatchEvent(new CustomEvent('backendPitchAnalysis', {
       detail: analysis
     }));
 
-    // Atualiza elementos específicos da UI
+    // Atualiza UI remota
     const backendNoteElement = document.getElementById('currentNoteRemote');
     const backendFreqElement = document.getElementById('currentFreqRemote');
     const backendAccuracyElement = document.getElementById('backendAccuracy');
-    const backendAnalysisElement = document.getElementById('backendAnalysis');
 
     if (backendNoteElement && analysis.note) {
       backendNoteElement.textContent = analysis.note;
@@ -223,64 +185,147 @@ class RealtimePitchService {
       backendFreqElement.textContent = analysis.freq.toFixed(2) + ' Hz';
     }
     if (backendAccuracyElement && analysis.cents) {
-      // Mostra cents como precisão
       backendAccuracyElement.textContent = Math.abs(analysis.cents) + '¢';
     }
-    
-    // Atualiza área de análise detalhada
-    if (backendAnalysisElement && analysis) {
-      backendAnalysisElement.innerHTML = `
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div>
-            <strong>Nota:</strong> ${analysis.note || '-'}
-          </div>
-          <div>
-            <strong>Frequência:</strong> ${analysis.freq ? analysis.freq.toFixed(2) + ' Hz' : '-'}
-          </div>
-          <div>
-            <strong>Desvio:</strong> ${analysis.cents ? analysis.cents + ' cents' : '-'}
-          </div>
-          <div>
-            <strong>Status:</strong> <span style="color:var(--green)">● Online</span>
-          </div>
-        </div>
-      `;
-    }
 
-    // Atualiza métricas detalhadas
+    // Atualiza UI do modo HÍBRIDO
+    this.updateHybridUIBackend(analysis);
     this.updateDetailedMetrics(analysis);
     
     console.log('Backend UI updated:', analysis);
   }
 
-  /**
-   * Atualiza métricas detalhadas do backend
-   */
+  updateHybridUIBackend(analysis) {
+    const backendNoteElement = document.getElementById('currentNoteHybridBackend');
+    const backendFreqElement = document.getElementById('currentFreqHybridBackend');
+    const precisionElement = document.getElementById('precisionHybridBackend');
+
+    if (backendNoteElement && analysis.note) {
+      backendNoteElement.textContent = analysis.note;
+    }
+    if (backendFreqElement && analysis.freq) {
+      backendFreqElement.textContent = analysis.freq.toFixed(2) + ' Hz';
+    }
+    if (precisionElement && analysis.cents) {
+      precisionElement.textContent = Math.abs(analysis.cents) + '¢';
+    }
+
+    this.updateHybridCanvasBackend(analysis);
+
+    if (this.lastLocalPitch) {
+      this.updateHybridComparison(this.lastLocalPitch, analysis);
+    } else {
+      this.updateHybridStatus();
+    }
+  }
+
+  updateHybridCanvasBackend(analysis) {
+    const midi = this.freqToMidi(analysis.freq);
+    
+    this.pitchHistoryHybridBackend.push(midi);
+    if (this.pitchHistoryHybridBackend.length > this.maxHistoryPoints) {
+      this.pitchHistoryHybridBackend.shift();
+    }
+
+    const canvas = document.getElementById('pitchCanvasHybridBackend');
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 10; i++) {
+        const y = (canvas.height / 10) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+
+      if (this.pitchHistoryHybridBackend.length > 1) {
+        ctx.strokeStyle = '#9b59b6';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        for (let i = 0; i < this.pitchHistoryHybridBackend.length; i++) {
+          const x = (canvas.width / this.maxHistoryPoints) * i;
+          const y = canvas.height - ((this.pitchHistoryHybridBackend[i] - 40) / 60) * canvas.height;
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        
+        ctx.stroke();
+      }
+    }
+  }
+
+  updateHybridComparison(localData, backendData) {
+    const freqDiffElement = document.getElementById('freqDiff');
+    const noteDiffElement = document.getElementById('noteDiff');
+    const concordanceElement = document.getElementById('concordance');
+
+    if (freqDiffElement) {
+      const diff = Math.abs(localData.frequency - backendData.freq);
+      freqDiffElement.textContent = diff.toFixed(2) + ' Hz';
+    }
+
+    if (noteDiffElement) {
+      const noteDiff = localData.note !== backendData.note ? localData.note + ' vs ' + backendData.note : 'Igual';
+      noteDiffElement.textContent = noteDiff;
+    }
+
+    if (concordanceElement) {
+      const concordance = localData.note === backendData.note ? '✅ Concordante' : '⚠️ Diferente';
+      concordanceElement.textContent = concordance;
+    }
+
+    this.updateHybridStatus();
+  }
+
+  updateHybridStatus() {
+    const statusElement = document.getElementById('hybridStatus');
+    
+    if (statusElement) {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString();
+      
+      if (this.lastBackendPitch && this.lastLocalPitch) {
+        statusElement.innerHTML = `<span style="color:var(--green)">● Ativo</span> (${timeStr})`;
+      } else if (this.lastLocalPitch) {
+        statusElement.innerHTML = `<span style="color:var(--orange)">● Aguardando Backend...</span> (${timeStr})`;
+      } else if (this.lastBackendPitch) {
+        statusElement.innerHTML = `<span style="color:var(--orange)">● Aguardando Local...</span> (${timeStr})`;
+      } else {
+        statusElement.innerHTML = `<span style="color:var(--muted)">● Aguardando dados...</span>`;
+      }
+    }
+  }
+
   updateDetailedMetrics(analysis) {
-    // 🎯 Precisão Vocal
     const precisionElement = document.getElementById('precisionMetric');
     if (precisionElement) {
-      // Calcula precisão baseada no desvio em cents
       const precision = analysis.cents ? Math.max(0, 100 - Math.abs(analysis.cents)) : 0;
       precisionElement.textContent = Math.round(precision) + '%';
     }
 
-    // 📊 Estabilidade
     const stabilityElement = document.getElementById('stabilityMetric');
     if (stabilityElement) {
-      // Simula estabilidade baseada na consistência das notas
       const stability = this.calculateStability();
       stabilityElement.textContent = Math.round(stability) + '%';
     }
 
-    // 🎤 Perfil Vocal
     const profileElement = document.getElementById('vocalProfile');
     if (profileElement) {
       const profile = this.determineVocalProfile(analysis);
       profileElement.textContent = profile;
     }
 
-    // 📈 Range Vocal
     const rangeElement = document.getElementById('vocalRange');
     if (rangeElement) {
       const range = this.calculateVocalRange();
@@ -288,28 +333,18 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Calcula estabilidade vocal baseada nas notas detectadas
-   */
   calculateStability() {
     if (this.realtimeNotes.length < 10) return 0;
     
-    // Pega as últimas 10 notas
     const recentNotes = this.realtimeNotes.slice(-10);
-    
-    // Calcula desvio padrão
     const mean = recentNotes.reduce((a, b) => a + b, 0) / recentNotes.length;
     const variance = recentNotes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / recentNotes.length;
     const stdDev = Math.sqrt(variance);
     
-    // Converte para estabilidade (quanto menor o desvio, maior a estabilidade)
     const stability = Math.max(0, 100 - (stdDev * 2));
     return Math.min(100, stability);
   }
 
-  /**
-   * Determina perfil vocal baseado na frequência
-   */
   determineVocalProfile(analysis) {
     if (!analysis.freq) return '-';
     
@@ -323,13 +358,10 @@ class RealtimePitchService {
     return 'Soprano Agudo';
   }
 
-  /**
-   * Calcula range vocal baseado nas notas detectadas
-   */
   calculateVocalRange() {
     if (this.realtimeNotes.length < 5) return '-';
     
-    const notes = this.realtimeNotes.slice(-50); // últimas 50 notas
+    const notes = this.realtimeNotes.slice(-50);
     const minNote = Math.min(...notes);
     const maxNote = Math.max(...notes);
     
@@ -339,9 +371,6 @@ class RealtimePitchService {
     return `${minNoteName} - ${maxNoteName}`;
   }
 
-  /**
-   * Inicializa canvas local
-   */
   initializeCanvasLocal() {
     this.canvasLocal = document.getElementById('pitchCanvasLocal');
     if (this.canvasLocal) {
@@ -352,9 +381,6 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Inicializa canvas remoto
-   */
   initializeCanvasRemote() {
     this.canvasRemote = document.getElementById('pitchCanvasRemote');
     if (this.canvasRemote) {
@@ -365,23 +391,179 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Atualiza visualização do canvas local
-   */
+  processAudioLocal(e) {
+    if (!this.isReady || !this.isActive) return;
+
+    const input = e.inputBuffer.getChannelData(0);
+    
+    try {
+      const inputSignalVector = this.essentia.arrayToVector(input);
+      const pitchData = this.essentia.PitchYin(inputSignalVector, this.audioContext.sampleRate);
+      const freq = pitchData.pitch;
+      
+      inputSignalVector.delete();
+      
+      if (freq > 90 && freq < 600) {
+        const midi = this.freqToMidi(freq);
+        const note = this.midiToNote(midi);
+
+        this.updateUILocal({
+          note: note,
+          frequency: freq,
+          confidence: Math.round(pitchData.pitchConfidence * 100),
+          midi: midi
+        });
+        
+        this.updateVisualizationLocal(midi);
+        this.realtimeNotes.push(midi);
+
+        if (this.onPitchDetected) {
+          this.onPitchDetected({
+            note: note,
+            frequency: freq,
+            confidence: pitchData.pitchConfidence,
+            midi: midi
+          });
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error processing audio LOCAL:', error);
+    }
+  }
+
+  processAudioRemote(e) {
+    if (!this.isReady || !this.isActive) return;
+
+    const input = e.inputBuffer.getChannelData(0);
+    
+    try {
+      const inputSignalVector = this.essentia.arrayToVector(input);
+      const pitchData = this.essentia.PitchYin(inputSignalVector, this.audioContext.sampleRate);
+      const freq = pitchData.pitch;
+      
+      inputSignalVector.delete();
+      
+      if (freq > 90 && freq < 600) {
+        const midi = this.freqToMidi(freq);
+        const note = this.midiToNote(midi);
+
+        const pitchDataObj = {
+          note: note,
+          frequency: freq,
+          confidence: Math.round(pitchData.pitchConfidence * 100),
+          midi: midi
+        };
+
+        this.lastLocalPitch = pitchDataObj;
+        this.updateUIRemote(pitchDataObj);
+        this.updateVisualizationRemote(midi);
+        this.updateHybridUILocal(pitchDataObj);
+        this.realtimeNotes.push(midi);
+
+        if (this.onPitchDetected) {
+          this.onPitchDetected(pitchDataObj);
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error processing audio REMOTE:', error);
+    }
+  }
+
+  updateHybridUILocal(pitchData) {
+    const noteElement = document.getElementById('currentNoteHybridLocal');
+    const freqElement = document.getElementById('currentFreqHybridLocal');
+    const confidenceElement = document.getElementById('confidenceHybridLocal');
+
+    if (noteElement) noteElement.textContent = pitchData.note;
+    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
+    if (confidenceElement) confidenceElement.textContent = pitchData.confidence + '%';
+
+    this.updateHybridCanvasLocal(pitchData.midi);
+
+    if (this.lastBackendPitch) {
+      this.updateHybridComparison(pitchData, this.lastBackendPitch);
+    } else {
+      this.updateHybridStatus();
+    }
+  }
+
+  updateHybridCanvasLocal(midi) {
+    this.pitchHistoryHybridLocal.push(midi);
+    if (this.pitchHistoryHybridLocal.length > this.maxHistoryPoints) {
+      this.pitchHistoryHybridLocal.shift();
+    }
+
+    const canvas = document.getElementById('pitchCanvasHybridLocal');
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 10; i++) {
+        const y = (canvas.height / 10) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+
+      if (this.pitchHistoryHybridLocal.length > 1) {
+        ctx.strokeStyle = '#3498db';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        for (let i = 0; i < this.pitchHistoryHybridLocal.length; i++) {
+          const x = (canvas.width / this.maxHistoryPoints) * i;
+          const y = canvas.height - ((this.pitchHistoryHybridLocal[i] - 40) / 60) * canvas.height;
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        
+        ctx.stroke();
+      }
+    }
+  }
+
+  updateUILocal(pitchData) {
+    const noteElement = document.getElementById('currentNoteLocal');
+    const freqElement = document.getElementById('currentFreqLocal');
+    const confidenceElement = document.getElementById('confidenceLocal');
+    const notesDetectedElement = document.getElementById('notesDetectedLocal');
+
+    if (noteElement) noteElement.textContent = pitchData.note;
+    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
+    if (confidenceElement) confidenceElement.textContent = pitchData.confidence + '%';
+    if (notesDetectedElement) notesDetectedElement.textContent = this.realtimeNotes.length;
+  }
+
+  updateUIRemote(pitchData) {
+    const noteElement = document.getElementById('currentNoteRemote');
+    const freqElement = document.getElementById('currentFreqRemote');
+
+    if (noteElement) noteElement.textContent = pitchData.note;
+    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
+  }
+
   updateVisualizationLocal(midi) {
     if (!this.canvasCtxLocal) return;
 
-    // Adiciona ao histórico
     this.pitchHistoryLocal.push(midi);
     if (this.pitchHistoryLocal.length > this.maxHistoryPoints) {
       this.pitchHistoryLocal.shift();
     }
 
-    // Limpa canvas
     this.canvasCtxLocal.fillStyle = '#1a1a1a';
     this.canvasCtxLocal.fillRect(0, 0, this.canvasLocal.width, this.canvasLocal.height);
 
-    // Desenha grade
     this.canvasCtxLocal.strokeStyle = '#333';
     this.canvasCtxLocal.lineWidth = 1;
     for (let i = 0; i <= 10; i++) {
@@ -392,7 +574,6 @@ class RealtimePitchService {
       this.canvasCtxLocal.stroke();
     }
 
-    // Desenha linha do pitch
     if (this.pitchHistoryLocal.length > 1) {
       this.canvasCtxLocal.strokeStyle = '#00ff88';
       this.canvasCtxLocal.lineWidth = 2;
@@ -413,23 +594,17 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Atualiza visualização do canvas remoto
-   */
   updateVisualizationRemote(midi) {
     if (!this.canvasCtxRemote) return;
 
-    // Adiciona ao histórico
     this.pitchHistoryRemote.push(midi);
     if (this.pitchHistoryRemote.length > this.maxHistoryPoints) {
       this.pitchHistoryRemote.shift();
     }
 
-    // Limpa canvas
     this.canvasCtxRemote.fillStyle = '#1a1a1a';
     this.canvasCtxRemote.fillRect(0, 0, this.canvasRemote.width, this.canvasRemote.height);
 
-    // Desenha grade
     this.canvasCtxRemote.strokeStyle = '#333';
     this.canvasCtxRemote.lineWidth = 1;
     for (let i = 0; i <= 10; i++) {
@@ -440,7 +615,6 @@ class RealtimePitchService {
       this.canvasCtxRemote.stroke();
     }
 
-    // Desenha linha do pitch
     if (this.pitchHistoryRemote.length > 1) {
       this.canvasCtxRemote.strokeStyle = '#ff6b6b';
       this.canvasCtxRemote.lineWidth = 2;
@@ -461,143 +635,6 @@ class RealtimePitchService {
     }
   }
 
-  /**
-   * Processa áudio - MODO LOCAL
-   */
-  processAudioLocal(e) {
-    if (!this.isReady || !this.isActive) return;
-
-    const input = e.inputBuffer.getChannelData(0);
-    
-    try {
-      // CONVERTE PARA VECTOR DO ESSENTIA (método correto)
-      const inputSignalVector = this.essentia.arrayToVector(input);
-      
-      // TENTA COM VECTOR DO ESSENTIA
-      const pitchData = this.essentia.PitchYin(inputSignalVector, this.audioContext.sampleRate);
-      const freq = pitchData.pitch;
-      
-      // LIMPA A MEMÓRIA DO VECTOR
-      inputSignalVector.delete();
-      
-      if (freq > 90 && freq < 600) {
-        // Converte para MIDI
-        const midi = this.freqToMidi(freq);
-        const note = this.midiToNote(midi);
-
-        // Atualiza UI local
-        this.updateUILocal({
-          note: note,
-          frequency: freq,
-          confidence: Math.round(pitchData.pitchConfidence * 100),
-          midi: midi
-        });
-        
-        // Atualiza visualização do canvas
-        this.updateVisualizationLocal(midi);
-        
-        // Acumula notas para estatísticas
-        this.realtimeNotes.push(midi);
-
-        // Dispara evento
-        if (this.onPitchDetected) {
-          this.onPitchDetected({
-            note: note,
-            frequency: freq,
-            confidence: pitchData.pitchConfidence,
-            midi: midi
-          });
-        }
-      }
-      
-    } catch (error) {
-      console.error('Error processing audio LOCAL:', error);
-    }
-  }
-
-  /**
-   * Processa áudio - MODO REMOTO
-   */
-  processAudioRemote(e) {
-    if (!this.isReady || !this.isActive) return;
-
-    const input = e.inputBuffer.getChannelData(0);
-    
-    try {
-      // CONVERTE PARA VECTOR DO ESSENTIA (método correto)
-      const inputSignalVector = this.essentia.arrayToVector(input);
-      
-      // TENTA COM VECTOR DO ESSENTIA
-      const pitchData = this.essentia.PitchYin(inputSignalVector, this.audioContext.sampleRate);
-      const freq = pitchData.pitch;
-      
-      // LIMPA A MEMÓRIA DO VECTOR
-      inputSignalVector.delete();
-      
-      if (freq > 90 && freq < 600) {
-        // Converte para MIDI
-        const midi = this.freqToMidi(freq);
-        const note = this.midiToNote(midi);
-
-        // Atualiza UI remota
-        this.updateUIRemote({
-          note: note,
-          frequency: freq,
-          confidence: Math.round(pitchData.pitchConfidence * 100),
-          midi: midi
-        });
-        
-        // Atualiza visualização do canvas
-        this.updateVisualizationRemote(midi);
-        
-        // Acumula notas para enviar ao backend
-        this.realtimeNotes.push(midi);
-
-        // Dispara evento
-        if (this.onPitchDetected) {
-          this.onPitchDetected({
-            note: note,
-            frequency: freq,
-            confidence: pitchData.pitchConfidence,
-            midi: midi
-          });
-        }
-      }
-      
-    } catch (error) {
-      console.error('Error processing audio REMOTE:', error);
-    }
-  }
-
-  /**
-   * Atualiza UI - MODO LOCAL
-   */
-  updateUILocal(pitchData) {
-    const noteElement = document.getElementById('currentNoteLocal');
-    const freqElement = document.getElementById('currentFreqLocal');
-    const confidenceElement = document.getElementById('confidenceLocal');
-    const notesDetectedElement = document.getElementById('notesDetectedLocal');
-
-    if (noteElement) noteElement.textContent = pitchData.note;
-    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
-    if (confidenceElement) confidenceElement.textContent = pitchData.confidence + '%';
-    if (notesDetectedElement) notesDetectedElement.textContent = this.realtimeNotes.length;
-  }
-
-  /**
-   * Atualiza UI - MODO REMOTO
-   */
-  updateUIRemote(pitchData) {
-    const noteElement = document.getElementById('currentNoteRemote');
-    const freqElement = document.getElementById('currentFreqRemote');
-
-    if (noteElement) noteElement.textContent = pitchData.note;
-    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
-  }
-
-  /**
-   * Para detecção de pitch em tempo real
-   */
   stopRealtimeDetection() {
     if (!this.isActive) return;
 
@@ -616,7 +653,6 @@ class RealtimePitchService {
       this.audioContext = null;
     }
 
-    // Limpa interval do backend
     if (this.backendInterval) {
       clearInterval(this.backendInterval);
       this.backendInterval = null;
@@ -626,25 +662,16 @@ class RealtimePitchService {
     console.log('Realtime pitch detection stopped');
   }
 
-  /**
-   * Define callbacks para eventos
-   */
   setCallbacks(callbacks) {
     this.onPitchDetected = callbacks.onPitchDetected || null;
     this.onRangeUpdate = callbacks.onRangeUpdate || null;
   }
 
-  /**
-   * Converte frequência para MIDI
-   */
   freqToMidi(freq) {
     if (freq <= 0) return 0;
     return Math.round(12 * Math.log2(freq / 440) + 69);
   }
 
-  /**
-   * Converte MIDI para nota
-   */
   midiToNote(midi) {
     const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
     const note = notes[midi % 12];
@@ -652,9 +679,6 @@ class RealtimePitchService {
     return note + octave;
   }
 
-  /**
-   * Limpa recursos
-   */
   cleanup() {
     this.stopRealtimeDetection();
     this.essentia = null;
@@ -664,5 +688,4 @@ class RealtimePitchService {
   }
 }
 
-// Singleton instance
 export const realtimePitchService = new RealtimePitchService();

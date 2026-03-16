@@ -463,6 +463,67 @@ export class AppController {
   }
 
   /**
+   * Inicia detecção de pitch em tempo real - MODO HÍBRIDO
+   */
+  async startRealtimePitchHybrid(backendUrl = '') {
+    try {
+      console.log('Iniciando pitch detection HÍBRIDO...');
+
+      // Inicia modo remoto (que já inclui backend + local)
+      await realtimePitchService.startRealtimeDetectionRemote(backendUrl);
+
+      // Inicializa UI híbrida
+      this.initializeHybridUI();
+
+      console.log('Pitch detection HÍBRIDO iniciado');
+    } catch (error) {
+      console.error('Erro ao iniciar pitch HÍBRIDO:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Inicializa UI do modo híbrido
+   */
+  initializeHybridUI() {
+    // Configura callbacks para atualizar UI híbrida
+    realtimePitchService.setCallbacks({
+      onPitchDetected: (pitchData) => {
+        this.handleHybridPitchDetected(pitchData);
+      },
+      onRangeUpdate: (rangeData) => {
+        this.handleRangeUpdate(rangeData);
+      }
+    });
+  }
+
+  /**
+   * Lida com pitch detectado no modo híbrido
+   */
+  handleHybridPitchDetected(pitchData) {
+    // Atualiza UI local (Essentia.js)
+    this.updateHybridUILocal(pitchData);
+
+    // Dispara evento para backend analysis
+    window.dispatchEvent(new CustomEvent('hybridPitchDetected', {
+      detail: pitchData
+    }));
+  }
+
+  /**
+   * Atualiza UI local do modo híbrido
+   */
+  updateHybridUILocal(pitchData) {
+    const noteElement = document.getElementById('currentNoteHybridLocal');
+    const freqElement = document.getElementById('currentFreqHybridLocal');
+    const confidenceElement = document.getElementById('confidenceHybridLocal');
+
+    if (noteElement) noteElement.textContent = pitchData.note;
+    if (freqElement) freqElement.textContent = pitchData.frequency.toFixed(2) + ' Hz';
+    if (confidenceElement) confidenceElement.textContent = pitchData.confidence + '%';
+  }
+
+  /**
    * Inicia detecção de pitch em tempo real (método legado)
    */
   async startRealtimePitch() {
@@ -548,6 +609,7 @@ export class AppController {
       pingServer: this.pingServer.bind(this),
       startRealtimePitchLocal: this.startRealtimePitchLocal.bind(this),
       startRealtimePitchRemote: this.startRealtimePitchRemote.bind(this),
+      startRealtimePitchHybrid: this.startRealtimePitchHybrid.bind(this),
       stopRealtimePitch: this.stopRealtimePitch.bind(this)
     };
   }
