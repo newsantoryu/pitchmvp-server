@@ -3,13 +3,13 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePitchStore } from '../stores/pitchStore.js'
 import { useMicrophone } from '../composables/useMicrophone.js'
-import { usePitchDetection } from '../composables/usePitchDetection.js'
+import { usePitch } from '../composables/usePitchDetection.js'
 
 const router = useRouter()
 const pitchStore = usePitchStore()
 
 const { isMicrophoneActive, start, stop, getAudioData } = useMicrophone()
-const { currentPitch, currentNote, isDetecting, init, startDetection, stopDetection } = usePitchDetection()
+const { currentPitch, currentNote, isDetecting, init, startDetection, stopDetection } = usePitch()
 
 const isInitialized = ref(false)
 const errorMessage = ref('')
