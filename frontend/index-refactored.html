@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PitchMVP</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/essentia.js/dist/essentia-wasm.web.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/essentia.js/dist/essentia.js-core.js"></script>
+</head>
+
+<body>
+  <div class="app">
+    <!-- Header Component -->
+    <div id="headerContainer"></div>
+    
+    <!-- Audio Source Component -->
+    <div id="audioSourceContainer"></div>
+    
+    <!-- Controls Component -->
+    <div id="controlsContainer"></div>
+    
+    <!-- Results Component -->
+    <div id="resultsContainer"></div>
+    
+    <!-- Scores View Component -->
+    <div id="scoresViewContainer"></div>
+    
+    <!-- Realtime Pitch Component (Hidden by default) -->
+    <div id="realtimePitchContainer"></div>
+  </div>
+
+  <!-- Component Scripts -->
+  <script src="components/Header.js"></script>
+  <script src="components/AudioSource.js"></script>
+  <script src="components/Controls.js"></script>
+  <script src="components/Metrics.js"></script>
+  <script src="components/Results.js"></script>
+  <script src="components/ScoresView.js"></script>
+  <script src="components/RealtimePitch.js"></script>
+
+  <!-- Main Application Script -->
+  <script>
+    // Global state
+    let tab = 'upload';
+    let recorder = null;
+    let recChunks = [];
+    let recTimer = null;
+    let recSecs = 0;
+    let analyzerNode = null;
+    let animF = null;
+    let resultData = null;
+    let pollTimer = null;
+    let voiceGender = 'auto';
+    let voiceLanguage = 'en';
+    let singingScore = [];
+    let currentIndex = 0;
+    let realtimeNotes = [];
+
+    // Component instances
+    let header, audioSource, controls, results, scoresView, realtimePitch;
+
+    // Initialize components when DOM is ready
+    document.addEventListener('DOMContentLoaded', () => {
+      initializeComponents();
+      initializeGlobalFunctions();
+      setupAutoServerUrl();
+    });
+
+    function initializeComponents() {
+      header = new Header(document.getElementById('headerContainer'));
+      audioSource = new AudioSource(document.getElementById('audioSourceContainer'));
+      controls = new Controls(document.getElementById('controlsContainer'));
+      results = new Results(document.getElementById('resultsContainer'));
+      scoresView = new ScoresView(document.getElementById('scoresViewContainer'));
+      realtimePitch = new RealtimePitch(document.getElementById('realtimePitchContainer'));
+    }
+
+    function initializeGlobalFunctions() {
+      // Expose global functions that components need
+      window.startSinging = startSinging;
+      window.loadScores = () => scoresView.loadScores();
+      window.pingServer = pingServer;
+      window.setGender = setGender;
+      window.setLanguage = setLanguage;
+      window.toggleRec = toggleRec;
+      window.analyze = analyze;
+      window.showErr = (msg) => controls.showError(msg);
+      window.setProg = (msg, pct) => controls.setProgress(msg, pct);
+      window.render = (data) => results.show(data);
+      window.comparePitch = comparePitch;
+      window.paintFeedback = paintFeedback;
+      window.loadScore = loadScore;
+      window.renderSingingScore = renderSingingScore;
+      window.noteToMidi = noteToMidi;
+      window.midiToNote = midiToNote;
+      window.resultData = resultData;
+    }
+
+    // Legacy functions for compatibility
+    function setGender(g, el) {
+      voiceGender = g;
+      ['gAuto', 'gMale', 'gFemale'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.classList.remove('active');
+      });
+      el.classList.add('active');
+    }
+
+    function setLanguage(lang, el) {
+      voiceLanguage = lang;
+      ['langEn', 'langPt'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.classList.remove('active');
+      });
+      el.classList.add('active');
+    }
+
+    function loadScore(words) {
+      singingScore = words.map(w => ({
+        word: w.text,
+        note: w.note,
+        start: w.start
+      }));
+      renderSingingScore();
+    }
+
+    function renderSingingScore() {
+      const el = document.getElementById("singingScore");
+      if (!el) return;
+
+      el.innerHTML = "";
+      singingScore.forEach((w, i) => {
+        const span = document.createElement("span");
+        span.id = "sing-" + i;
+        span.style.marginRight = "8px";
+        span.innerText = w.word;
+        el.appendChild(span);
+      });
+    }
+
+    function paintFeedback(index, result) {
+      const el = document.getElementById("sing-" + index);
+      if (!el) return;
+
+      if (result === "correct") el.style.color = "#3B6D11";
+      else if (result === "close") el.style.color = "#BA7517";
+      else el.style.color = "#A32D2D";
+    }
+
+    function comparePitch(note) {
+      const target = singingScore[currentIndex];
+      if (!target || !target.note) return;
+
+      const diff = Math.abs(noteToMidi(note) - noteToMidi(target.note));
+
+      if (diff <= 1) {
+        paintFeedback(currentIndex, "correct");
+        currentIndex++;
+      } else if (diff <= 3) {
+        paintFeedback(currentIndex, "close");
+      } else {
+        paintFeedback(currentIndex, "wrong");
+      }
+    }
+
+    // Server ping
+    let pingTimer = null;
+    function pingServer() {
+      clearTimeout(pingTimer);
+      pingTimer = setTimeout(async () => {
+        const url = header.getServerUrl();
+        if (!url) {
+          header.setServerStatus('');
+          return;
+        }
+
+        try {
+          const r = await fetch(url + '/pitch/health', {
+            signal: AbortSignal.timeout(4000),
+            headers: { 'ngrok-skip-browser-warning': '1' }
+          });
+          header.setServerStatus(r.ok ? 'ok' : 'err');
+        } catch {
+          header.setServerStatus('err');
+        }
+      }, 700);
+    }
+
+    // Microphone recording
+    async function toggleRec() {
+      const btn = document.getElementById('recBtn');
+      const dot = document.getElementById('rDot');
+      const st = document.getElementById('rStatus');
+      const te = document.getElementById('rTime');
+
+      if (!recorder || recorder.state === 'inactive') {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          recorder = new MediaRecorder(stream);
+          recChunks = [];
+          
+          const ctx = new AudioContext();
+          const src = ctx.createMediaStreamSource(stream);
+          analyzerNode = ctx.createAnalyser();
+          analyzerNode.fftSize = 256;
+          src.connect(analyzerNode);
+          drawWave();
+
+          recorder.ondataavailable = e => {
+            if (e.data.size > 0) recChunks.push(e.data);
+          };
+
+          recorder.onstop = () => {
+            const blob = new Blob(recChunks, { type: 'audio/wav' });
+            audioSource.selectFile(new File([blob], 'gravacao.wav', { type: 'audio/wav' }));
+            st.textContent = `Pronto (${recSecs}s)`;
+            dot.className = 'rdot';
+            stream.getTracks().forEach(t => t.stop());
+            clearInterval(recTimer);
+            cancelAnimationFrame(animF);
+          };
+
+          recorder.start();
+          recSecs = 0;
+          btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>Parar';
+          btn.classList.add('btn-d');
+          btn.classList.remove('btn-p');
+          dot.className = 'rdot on';
+          st.textContent = 'Gravando...';
+          recTimer = setInterval(() => { recSecs++; te.textContent = recSecs + 's'; }, 1000);
+        } catch (err) {
+          showErr('Microfone: ' + err.message);
+        }
+      } else {
+        recorder.stop();
+        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>Gravar';
+        btn.classList.remove('btn-d');
+        btn.classList.add('btn-p');
+        te.textContent = '';
+      }
+    }
+
+    function drawWave() {
+      const canvas = document.getElementById('wCanvas');
+      const ctx = canvas.getContext('2d');
+      const buf = new Uint8Array(analyzerNode.frequencyBinCount);
+
+      function f() {
+        animF = requestAnimationFrame(f);
+        analyzerNode.getByteTimeDomainData(buf);
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = '#534AB7';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const step = canvas.width / buf.length;
+        buf.forEach((v, i) => {
+          const x = i * step, y = (v / 255) * canvas.height;
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      f();
+    }
+
+    // Analysis function
+    async function analyze() {
+      const serverUrl = header.getServerUrl();
+      if (!serverUrl) {
+        showErr('Configure a URL do servidor.');
+        return;
+      }
+
+      controls.setAnalyzingButton(true);
+      results.hide();
+      controls.hideError();
+      clearInterval(pollTimer);
+      setProg('Enviando arquivo...', 5);
+
+      try {
+        let resp;
+        const currentTab = audioSource.getCurrentTab();
+
+        if (currentTab === 'url') {
+          const audioUrl = audioSource.getSupabaseUrl();
+          const anonKey = audioSource.getAnonKey();
+          if (!audioUrl) {
+            showErr('Informe a URL do Supabase.');
+            controls.setAnalyzingButton(false);
+            return;
+          }
+          resp = await fetch(serverUrl + '/pitch/transcribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': '1'
+            },
+            body: JSON.stringify({
+              audio_url: audioUrl,
+              anon_key: anonKey,
+              voice_gender: voiceGender,
+              language: voiceLanguage
+            })
+          });
+        } else {
+          const selFile = audioSource.getSelectedFile();
+          if (!selFile) {
+            showErr('Selecione ou grave um arquivo.');
+            controls.setAnalyzingButton(false);
+            return;
+          }
+          setProg(`Enviando ${Math.round(selFile.size / 1024)} KB...`, 8);
+          const form = new FormData();
+          form.append('file', selFile);
+          const fHeaders = new Headers();
+          fHeaders.append('ngrok-skip-browser-warning', '1');
+          form.append('voice_gender', voiceGender);
+          form.append('language', voiceLanguage);
+          resp = await fetch(serverUrl + '/pitch/transcribe-file', {
+            method: 'POST',
+            headers: fHeaders,
+            body: form
+          });
+        }
+
+        if (!resp.ok) {
+          const e = await resp.json().catch(() => ({ detail: resp.statusText }));
+          throw new Error(e.detail || 'Erro ' + resp.status);
+        }
+
+        const { job_id } = await resp.json();
+        setProg('Processando no servidor...', 15);
+
+        // Polling
+        let elapsed = 0;
+        pollTimer = setInterval(async () => {
+          elapsed += 5;
+          try {
+            const jr = await fetch(serverUrl + '/pitch/job/' + job_id, {
+              headers: { 'ngrok-skip-browser-warning': '1' }
+            });
+            if (!jr.ok) {
+              clearInterval(pollTimer);
+              showErr('Erro ao verificar job.');
+              controls.setAnalyzingButton(false);
+              return;
+            }
+            const job = await jr.json();
+
+            if (job.status === 'transcribing' || job.status === 'queued') {
+              const pct = Math.min(15 + Math.round((elapsed / 600) * 70), 82);
+              setProg(`Transcrevendo com Whisper large-v3... (${Math.floor(elapsed / 60)}m${elapsed % 60}s)`, pct);
+            } else if (job.status === 'pitch') {
+              setProg('Detectando notas (pitch)...', 85);
+            } else if (job.status === 'done') {
+              clearInterval(pollTimer);
+              setProg('Concluído!', 100);
+              setTimeout(() => controls.hideProgress(), 1200);
+              resultData = job.result;
+              window.resultData = resultData;
+              render(resultData);
+              controls.setAnalyzingButton(false);
+            } else if (job.status === 'error') {
+              clearInterval(pollTimer);
+              showErr(job.message || 'Erro no servidor.');
+              controls.setAnalyzingButton(false);
+            }
+          } catch (e) {
+            clearInterval(pollTimer);
+            showErr('Conexão perdida: ' + e.message);
+            controls.setAnalyzingButton(false);
+          }
+        }, 5000);
+
+      } catch (err) {
+        showErr(err.message);
+        controls.setAnalyzingButton(false);
+      }
+    }
+
+    // Singing functionality
+    async function startSinging() {
+      if (!resultData || !resultData.words) {
+        showErr('Analise um áudio primeiro para obter as notas.');
+        return;
+      }
+
+      loadScore(resultData.words);
+      
+      if (!realtimePitch.pitchReady) {
+        await realtimePitch.initPitchEngine();
+      }
+
+      await realtimePitch.startRealtime();
+    }
+
+    // Utility functions
+    function noteToMidi(note) {
+      if (!note) return null;
+      const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+      const match = note.match(/^([A-G]#?)(-?\d+)$/);
+      if (!match) return null;
+      const noteIndex = NOTES.indexOf(match[1]);
+      return noteIndex < 0 ? null : (parseInt(match[2]) + 1) * 12 + noteIndex;
+    }
+
+    function midiToNote(midi) {
+      const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+      return NOTES[midi % 12] + (Math.floor(midi / 12) - 1);
+    }
+
+    // Auto-setup server URL if same origin
+    function setupAutoServerUrl() {
+      const base = window.location.origin;
+      const sUrl = document.getElementById('sUrl');
+      if (sUrl && !sUrl.value && (base.startsWith('http://') || base.startsWith('https://'))) {
+        sUrl.placeholder = base;
+        sUrl.value = base;
+      }
+    }
+  </script>
+</body>
+</html>

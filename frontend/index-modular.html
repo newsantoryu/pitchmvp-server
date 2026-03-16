@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PitchMVP</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/essentia.js/dist/essentia-wasm.web.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/essentia.js/dist/essentia.js-core.js"></script>
+</head>
+
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M12 3a9 9 0 100 18A9 9 0 0012 3zm0 2a7 7 0 110 14A7 7 0 0112 5zm0 2a5 5 0 100 10A5 5 0 0012 7zm0 2a3 3 0 110 6 3 3 0 010-6z" />
+          </svg>
+        </div>
+        <div>
+          <div class="logo-name">PitchMVP</div>
+          <div class="logo-sub">Transcrição · Pitch · Cifra</div>
+        </div>
+        <button class="btn btn-p" onclick="startSinging()">
+          🎤 Cantar
+        </button>
+      </div>
+      <button onclick="loadScores()">📚 Minhas cifras</button>
+      <button onclick="toggleRealtimePitch()" class="btn btn-sm">🎵 Pitch Realtime</button>
+      <div class="server-row">
+        <div class="dot" id="sDot"></div>
+        <input class="server-in" id="sUrl" type="text" placeholder="https://seu-ngrok.ngrok-free.app"
+          oninput="pingServer()" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="clabel">Fonte do áudio</div>
+      <div
+        style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+        <div class="tabs" style="margin:0">
+          <div class="tab active" onclick="switchTab('upload',this)">Upload</div>
+          <div class="tab" onclick="switchTab('url',this)">URL Supabase</div>
+          <div class="tab" onclick="switchTab('mic',this)">Microfone</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--faint)">Registro:</span>
+          <button class="tab active" id="gAuto" onclick="setGender('auto',this)"
+            style="padding:5px 10px;font-size:12px">Auto</button>
+          <button class="tab" id="gMale" onclick="setGender('male',this)"
+            style="padding:5px 10px;font-size:12px">Masculino</button>
+          <button class="tab" id="gFemale" onclick="setGender('female',this)"
+            style="padding:5px 10px;font-size:12px">Feminino</button>
+          <span style="font-size:11px;color:var(--faint);margin-left:6px">Idioma:</span>
+          <button class="tab active" id="langEn" onclick="setLanguage('en',this)"
+            style="padding:5px 10px;font-size:12px">English</button>
+          <button class="tab" id="langPt" onclick="setLanguage('pt',this)"
+            style="padding:5px 10px;font-size:12px">Português</button>
+        </div>
+      </div>
+
+      <div id="tab-upload">
+        <div class="dropz" id="dz" onclick="document.getElementById('fi').click()">
+          <input type="file" id="fi" accept=".wav,.mp3,.m4a,.flac,.ogg" onchange="onFile(event)">
+          <svg style="width:40px;height:40px;margin:0 auto 10px;display:block;opacity:.3" viewBox="0 0 24 24"
+            fill="currentColor">
+            <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" />
+          </svg>
+          <div class="drop-title">Clique ou arraste o arquivo</div>
+          <div class="drop-sub">WAV · MP3 · M4A · FLAC</div>
+          <div class="drop-file" id="dfName"></div>
+        </div>
+      </div>
+
+      <div id="tab-url" class="hidden">
+        <div class="ig">
+          <div>
+            <label>URL do arquivo no Supabase</label>
+            <input class="tinput" id="supaUrl" type="text"
+              placeholder="https://xxx.supabase.co/storage/v1/object/references/user_001/song.wav" />
+          </div>
+          <div>
+            <label>Anon Key</label>
+            <input class="tinput" id="anonKey" type="password" placeholder="eyJhbGci..." />
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-mic" class="hidden">
+        <div class="mic-area">
+          <div class="mic-row">
+            <button class="btn btn-p" id="recBtn" onclick="toggleRec()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="12" r="8" />
+              </svg>Gravar
+            </button>
+            <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">
+              <div class="rdot" id="rDot"></div><span id="rStatus">Pronto</span>
+            </div>
+            <span class="rtime" id="rTime"></span>
+          </div>
+          <div class="wave"><canvas id="wCanvas"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arow">
+      <button class="btn btn-p" id="aBtn" onclick="analyze()" style="padding:10px 24px;font-size:14px">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M8 5v14l11-7z" />
+        </svg>Analisar
+      </button>
+      <div class="prog-wrap hidden" id="pWrap">
+        <div class="prog-msg" id="pMsg">Iniciando...</div>
+        <div class="prog-track">
+          <div class="prog-fill" id="pFill"></div>
+        </div>
+      </div>
+      <div class="err-box" id="errBox"></div>
+    </div>
+
+    <!-- Tela Minhas cifras -->
+    <div id="scoresView" class="hidden">
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="clabel" style="margin:0">📚 Minhas cifras</div>
+          <button class="btn btn-sm" onclick="hideScoresView()">← Voltar</button>
+        </div>
+        <div id="scoresList" class="lyrics-wrap"></div>
+        <p id="scoresEmpty" class="hidden" style="color:var(--faint);font-size:13px;margin-top:12px">Nenhuma cifra salva
+          ainda. Analise um áudio para salvar.</p>
+      </div>
+    </div>
+
+    <div id="results" class="hidden">
+      <div class="metrics">
+        <div class="metric">
+          <div class="mval" id="mW">0</div>
+          <div class="mlbl">palavras</div>
+        </div>
+        <div class="metric">
+          <div class="mval" id="mR">—</div>
+          <div class="mlbl">range vocal</div>
+        </div>
+        <div class="metric">
+          <div class="mval" id="mT">—</div>
+          <div class="mlbl">tessitura</div>
+        </div>
+        <div class="metric">
+          <div class="mval" id="mS">—</div>
+          <div class="mlbl">semitons</div>
+        </div>
+        <div class="metric">
+          <div class="mval" id="mD" style="color:var(--red)">0%</div>
+          <div class="mlbl">difíceis</div>
+        </div>
+      </div>
+      <p id="savedHint" class="hidden" style="margin-bottom:14px;font-size:13px;color:var(--green);">
+        Cifra salva. <button type="button" class="btn btn-sm" onclick="loadScores()" style="margin-left:6px">Ver em
+          Minhas cifras</button>
+      </p>
+
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="clabel" style="margin:0">Cifra</div>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <div class="legend">
+              <div class="litem">
+                <div class="ldot" style="background:var(--green)"></div>Confortável
+              </div>
+              <div class="litem">
+                <div class="ldot" style="background:#BA7517"></div>Médio
+              </div>
+              <div class="litem">
+                <div class="ldot" style="background:var(--red)"></div>Difícil
+              </div>
+            </div>
+            <button class="btn btn-sm" onclick="exportPDF()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+              </svg>PDF
+            </button>
+          </div>
+        </div>
+        <div class="cifra-wrap">
+          <div id="cifra"></div>
+        </div>
+      </div>
+      <div id="singingScore" style="font-size:18px;margin-top:20px"></div>
+      <div class="card">
+        <div class="sec-hdr">
+          <div class="clabel" style="margin:0">Letra com timestamps</div>
+          <button class="btn btn-sm" onclick="copyLyrics()">Copiar</button>
+        </div>
+        <div class="lyrics-wrap" id="lyrics"></div>
+      </div>
+    </div>
+
+    <!-- Container para Realtime Pitch -->
+    <div id="realtimePitchContainer"></div>
+
+  </div>
+
+  <!-- Módulos JavaScript -->
+  <script type="module">
+    // Importa módulos no nível superior
+    import { appController } from './js/app/AppController.js';
+    import { realtimePitchUI } from './js/ui/RealtimePitchUI.js';
+    import { uiController } from './js/ui/UIController.js';
+
+    // Inicializa aplicação
+    document.addEventListener('DOMContentLoaded', async () => {
+      try {
+        console.log('Inicializando PitchMVP Modular...');
+
+        // Inicializa UI do realtime pitch
+        realtimePitchUI.render();
+        console.log('RealtimePitchUI renderizado');
+
+        // Obtém funções da UI
+        const uiFunctions = appController.getUIFunctions();
+        console.log('Funções da UI obtidas');
+
+        // Expõe funções globalmente para acesso via onclick
+        window.switchTab = uiFunctions.switchTab;
+        window.setGender = uiFunctions.setGender;
+        window.setLanguage = uiFunctions.setLanguage;
+        window.onFile = uiFunctions.onFile;
+        window.toggleRec = uiFunctions.toggleRec;
+        window.analyze = uiFunctions.analyze;
+        window.startSinging = uiFunctions.startSinging;
+        window.loadScores = uiFunctions.loadScores;
+        window.openScore = uiFunctions.openScore;
+        window.deleteScore = uiFunctions.deleteScore;
+        window.exportPDF = uiFunctions.exportPDF;
+        window.copyLyrics = uiFunctions.copyLyrics;
+        window.pingServer = uiFunctions.pingServer;
+        window.hideScoresView = uiController.hideScoresView.bind(uiController);
+        window.toggleRealtimePitch = uiFunctions.toggleRealtimePitch;
+        window.startRealtimePitch = uiFunctions.startRealtimePitch;
+        window.stopRealtimePitch = uiFunctions.stopRealtimePitch;
+
+        // Expõe controller globalmente
+        window.app = appController;
+
+        console.log('PitchMVP inicializado com arquitetura modular e realtime pitch!');
+
+        // Testa se as funções estão disponíveis
+        console.log('Funções disponíveis:', {
+          toggleRealtimePitch: typeof window.toggleRealtimePitch,
+          startRealtimePitch: typeof window.startRealtimePitch,
+          stopRealtimePitch: typeof window.stopRealtimePitch
+        });
+
+      } catch (error) {
+        console.error('Erro na inicialização:', error);
+        alert('Erro ao inicializar PitchMVP: ' + error.message);
+      }
+    });
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PitchMVP - Teste Realtime</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/essentia.js/dist/essentia-wasm.web.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/essentia.js/dist/essentia.js-core.js"></script>
+</head>
+
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 3a9 9 0 100 18A9 9 0 0012 3zm0 2a7 7 0 110 14A7 7 0 0112 5zm0 2a5 5 0 100 10A5 5 0 0012 7zm0 2a3 3 0 110 6 3 3 0 010-6z" />
+          </svg>
+        </div>
+        <div>
+          <div class="logo-name">PitchMVP - Teste</div>
+          <div class="logo-sub">Realtime Pitch Detection</div>
+        </div>
+      </div>
+      <button onclick="toggleRealtimePitch()" class="btn btn-p">🎵 Pitch Realtime</button>
+    </div>
+
+    <!-- Container para Realtime Pitch -->
+    <div id="realtimePitchContainer"></div>
+
+    <!-- Debug Info -->
+    <div class="card">
+      <div class="clabel">Debug Info</div>
+      <div id="debugInfo">
+        <p>Status: <span id="status">Carregando...</span></p>
+        <p>Essentia: <span id="essentiaStatus">Não carregado</span></p>
+        <p>Microfone: <span id="micStatus">Não testado</span></p>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    console.log('Iniciando teste realtime...');
+    
+    // Verifica se Essentia está disponível
+    window.addEventListener('DOMContentLoaded', () => {
+      const essentiaStatus = document.getElementById('essentiaStatus');
+      const statusEl = document.getElementById('status');
+      
+      if (typeof EssentiaWASM !== 'undefined') {
+        essentiaStatus.textContent = 'Disponível';
+        statusEl.textContent = 'Essentia carregado';
+      } else {
+        essentiaStatus.textContent = 'Não disponível';
+        statusEl.textContent = 'Essentia não encontrado';
+      }
+      
+      // Testa microfone
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => {
+          document.getElementById('micStatus').textContent = 'Disponível';
+        })
+        .catch(err => {
+          document.getElementById('micStatus').textContent = 'Erro: ' + err.message;
+        });
+    });
+
+    // Implementação simplificada do realtime pitch
+    class SimpleRealtimePitch {
+      constructor() {
+        this.essentia = null;
+        this.isActive = false;
+        this.audioContext = null;
+        this.processor = null;
+      }
+
+      async init() {
+        if (this.essentia) return;
+        
+        try {
+          const wasmModule = await EssentiaWASM();
+          this.essentia = new Essentia(wasmModule);
+          console.log('Essentia inicializado');
+        } catch (error) {
+          console.error('Erro ao inicializar Essentia:', error);
+          throw error;
+        }
+      }
+
+      async start() {
+        if (this.isActive) return;
+        
+        await this.init();
+        
+        this.audioContext = new AudioContext();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = this.audioContext.createMediaStreamSource(stream);
+        this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
+        
+        source.connect(this.processor);
+        this.processor.connect(this.audioContext.destination);
+        
+        this.processor.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          const pitchData = this.essentia.PitchYin(input, this.audioContext.sampleRate);
+          const freq = pitchData.pitch;
+          
+          if (freq > 90 && freq < 600) {
+            this.updateDisplay(freq);
+          }
+        };
+        
+        this.isActive = true;
+        console.log('Realtime pitch iniciado');
+      }
+
+      stop() {
+        if (this.processor) {
+          this.processor.disconnect();
+          this.processor = null;
+        }
+        
+        if (this.audioContext) {
+          this.audioContext.close();
+          this.audioContext = null;
+        }
+        
+        this.isActive = false;
+        console.log('Realtime pitch parado');
+      }
+
+      updateDisplay(freq) {
+        const note = this.freqToNote(freq);
+        const display = document.getElementById('pitchDisplay');
+        if (display) {
+          display.innerHTML = `Nota: ${note} | Freq: ${freq.toFixed(2)} Hz`;
+        }
+      }
+
+      freqToNote(freq) {
+        const midi = Math.round(12 * Math.log2(freq / 440) + 69);
+        const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const note = notes[midi % 12];
+        const octave = Math.floor(midi / 12) - 1;
+        return note + octave;
+      }
+    }
+
+    // Cria instância global
+    window.realtimePitch = new SimpleRealtimePitch();
+
+    // Função global para toggle
+    window.toggleRealtimePitch = async () => {
+      const container = document.getElementById('realtimePitchContainer');
+      
+      if (!container.innerHTML) {
+        // Renderiza UI simples
+        container.innerHTML = `
+          <div class="card">
+            <div class="clabel">Pitch Detection</div>
+            <div style="display:flex;gap:12px;margin-bottom:20px">
+              <button class="btn btn-p" onclick="startRealtime()">Iniciar</button>
+              <button class="btn btn-d" onclick="stopRealtime()">Parar</button>
+            </div>
+            <div id="pitchDisplay" style="font-size:18px;color:var(--purple);font-weight:600">
+              Aguardando início...
+            </div>
+          </div>
+        `;
+      }
+      
+      if (container.classList.contains('hidden')) {
+        container.classList.remove('hidden');
+      } else {
+        container.classList.add('hidden');
+        window.realtimePitch.stop();
+      }
+    };
+
+    // Funções globais para os botões
+    window.startRealtime = async () => {
+      try {
+        await window.realtimePitch.start();
+        document.getElementById('status').textContent = 'Ativo';
+      } catch (error) {
+        console.error('Erro:', error);
+        alert('Erro ao iniciar: ' + error.message);
+      }
+    };
+
+    window.stopRealtime = () => {
+      window.realtimePitch.stop();
+      document.getElementById('status').textContent = 'Parado';
+      document.getElementById('pitchDisplay').textContent = 'Parado';
+    };
+
+    console.log('Script de teste carregado');
+  </script>
+</body>
+</html>
