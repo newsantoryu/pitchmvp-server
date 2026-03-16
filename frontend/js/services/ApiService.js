@@ -1,6 +1,11 @@
 /**
  * Serviço de comunicação com a API
  */
+
+import { CONFIG } from "../config.js";
+
+fetch(`${CONFIG.API_BASE}${CONFIG.TRANSCRIBE_ENDPOINT}`)
+
 export class ApiService {
   constructor() {
     this.pingTimer = null;
@@ -21,7 +26,7 @@ export class ApiService {
     this.pingTimer = setTimeout(async () => {
       const url = this.getServerUrl();
       const dot = document.getElementById('sDot');
-      
+
       if (!url) {
         if (dot) dot.className = 'dot';
         return;
@@ -32,7 +37,7 @@ export class ApiService {
           signal: AbortSignal.timeout(4000),
           headers: { 'ngrok-skip-browser-warning': '1' }
         });
-        
+
         if (dot) {
           dot.className = response.ok ? 'dot ok' : 'dot err';
         }
@@ -113,7 +118,7 @@ export class ApiService {
    */
   async checkJobStatus(jobId) {
     const serverUrl = this.getServerUrl();
-    
+
     const response = await fetch(serverUrl + '/pitch/job/' + jobId, {
       headers: { 'ngrok-skip-browser-warning': '1' }
     });

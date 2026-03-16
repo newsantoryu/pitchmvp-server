@@ -5,6 +5,10 @@
 import { appController } from './app/AppController.js';
 import { uiController } from './ui/UIController.js';
 
+document.addEventListener("DOMContentLoaded", () => {
+  const app = new AppController();
+  app.init();
+});
 /**
  * Classe principal da aplicação
  */
@@ -21,19 +25,19 @@ class PitchMVPApp {
 
     try {
       console.log('Inicializando PitchMVP...');
-      
+
       // Inicializa controladores
       await this.initializeControllers();
-      
+
       // Configura handlers globais
       this.setupGlobalHandlers();
-      
+
       // Inicializa UI
       await this.initializeUI();
-      
+
       this.initialized = true;
       console.log('PitchMVP inicializado com sucesso!');
-      
+
     } catch (error) {
       console.error('Erro ao inicializar PitchMVP:', error);
       this.handleInitializationError(error);
@@ -46,7 +50,7 @@ class PitchMVPApp {
   async initializeControllers() {
     // Controller principal já é inicializado como singleton
     // UI Controller também é singleton
-    
+
     // Verifica se APIs necessárias estão disponíveis
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error('API de áudio não suportada neste navegador');
@@ -88,7 +92,7 @@ class PitchMVPApp {
     ];
 
     const missingElements = essentialElements.filter(id => !document.getElementById(id));
-    
+
     if (missingElements.length > 0) {
       console.warn('Elementos essenciais não encontrados:', missingElements);
     }
@@ -105,7 +109,7 @@ class PitchMVPApp {
    */
   handleInitializationError(error) {
     console.error('Falha na inicialização:', error);
-    
+
     // Mostra mensagem amigável para o usuário
     const errorElement = document.getElementById('errBox');
     if (errorElement) {
