@@ -162,6 +162,19 @@ function estimateTempo(words) {
   return Math.max(60, Math.min(200, estimatedBPM)) // Limitar entre 60-200 BPM
 }
 
+function getNoteDistribution(words) {
+  const noteCount = {}
+  
+  words.forEach(word => {
+    if (word.note) {
+      const note = word.note
+      noteCount[note] = (noteCount[note] || 0) + 1
+    }
+  })
+  
+  return noteCount
+}
+
 onMounted(() => {
   loadTranscription()
 })
@@ -172,7 +185,10 @@ onMounted(() => {
     <!-- Header -->
     <header class="page-header">
       <button @click="goBack" class="back-btn">← Voltar</button>
-      <h1>📊 Resultados</h1>
+      <div class="header-content">
+        <h1>📊 {{ transcription?.title || 'Carregando...' }}</h1>
+        <span class="header-id" v-if="transcription">ID: {{ transcription.id }}</span>
+      </div>
     </header>
 
     <!-- Loading State -->
@@ -196,6 +212,40 @@ onMounted(() => {
 
     <!-- Main Content -->
     <main class="results-content" v-else-if="transcription">
+      <!-- Notes Timeline - MAIN VIEW -->
+      <section class="pitch-section main-timeline-section">
+        <div class="pitch-card">
+          <div class="notes-timeline main-view">
+            <div class="timeline-stats horizontal">
+              <div class="timeline-stat">
+                <span class="stat-number">{{ transcription.words.length }}</span>
+                <span class="stat-label">Palavras</span>
+              </div>
+              <div class="timeline-stat">
+                <span class="stat-number">{{ transcription.words.filter(w => w.note).length }}</span>
+                <span class="stat-label">Notas</span>
+              </div>
+              <div class="timeline-stat">
+                <span class="stat-number">{{ Math.round((transcription.words.filter(w => w.note).length / transcription.words.length) * 100) }}%</span>
+                <span class="stat-label">Precisão</span>
+              </div>
+            </div>
+            <div class="timeline-container main-timeline">
+              <div 
+                v-for="(word, index) in transcription.words"
+                :key="index"
+                class="note-block main-block"
+                :class="{ 'valid': word.note, 'invalid': !word.note }"
+                :title="`Tempo: ${formatTime(word.start || index * 0.1)} | Palavra: ${word.text || 'N/A'} | Nota: ${word.note || 'N/A'}`"
+              >
+                <div class="word-text">{{ word.text || '?' }}</div>
+                <div class="word-note">{{ word.note || '-' }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Summary -->
       <section class="summary-section">
         <div class="summary-card">
@@ -238,7 +288,7 @@ onMounted(() => {
       </section>
 
       <!-- Pitch Analysis -->
-      <section class="pitch-section" v-if="transcription.words && transcription.words.length > 0">
+      <section class="pitch-section">
         <div class="pitch-card">
           <h2>🎵 Análise de Pitch</h2>
           
@@ -255,25 +305,6 @@ onMounted(() => {
             <div class="stat-item">
               <span class="stat-number">{{ Math.round((transcription.words.filter(w => w.note).length / transcription.words.length) * 100) }}%</span>
               <span class="stat-label">Precisão</span>
-            </div>
-          </div>
-
-          <!-- Notes Timeline -->
-          <div class="notes-timeline">
-            <h3>📈 Linha do Tempo</h3>
-            <div class="timeline-container">
-              <div 
-                v-for="(word, index) in transcription.words.slice(0, 50)"
-                :key="index"
-                class="note-block"
-                :class="{ 'valid': word.note, 'invalid': !word.note }"
-                :title="`Tempo: ${formatTime(word.start || index * 0.1)} | Nota: ${word.note || 'N/A'}`"
-              >
-                {{ word.note || '-' }}
-              </div>
-              <div v-if="transcription.words.length > 50" class="more-notes">
-                +{{ transcription.words.length - 50 }} notas
-              </div>
             </div>
           </div>
 
@@ -369,23 +400,40 @@ export default {
   color: white;
 }
 
+.header-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.page-header h1 {
+  font-size: 2.5rem;
+  margin: 0;
+  font-weight: 700;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.header-id {
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.8);
+  font-weight: 500;
+  margin-top: 0.25rem;
+}
+
 .back-btn {
-  padding: 0.5rem 1rem;
+  padding: 0.75rem 1.5rem;
   background: rgba(255, 255, 255, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 8px;
   color: white;
   cursor: pointer;
   transition: all 0.3s ease;
+  font-weight: 600;
 }
 
 .back-btn:hover {
   background: rgba(255, 255, 255, 0.3);
-}
-
-.page-header h1 {
-  font-size: 2rem;
-  margin: 0;
 }
 
 .loading-state,
@@ -530,33 +578,166 @@ export default {
   color: #666;
 }
 
-.notes-timeline {
+/* Main Timeline Section */
+.main-timeline-section {
   margin-bottom: 2rem;
 }
 
-.notes-timeline h3 {
-  margin-bottom: 1rem;
-  color: #333;
+.main-timeline-section .pitch-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(33, 150, 243, 0.05));
+  border: 3px solid #2196f3;
+  box-shadow: 0 12px 40px rgba(33, 150, 243, 0.2);
+  padding: 2.5rem;
 }
 
-.timeline-container {
+/* Main Timeline Styles */
+.notes-timeline.main-view {
+  margin-bottom: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  border: none;
+}
+
+.timeline-stats.horizontal {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  padding: 1rem;
-  background: #f8f9fa;
-  border-radius: 8px;
-  max-height: 200px;
-  overflow-y: auto;
+  justify-content: center;
+  gap: 2rem;
+  margin-bottom: 1.5rem;
 }
 
-.note-block {
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+.timeline-stats.horizontal .timeline-stat {
+  text-align: center;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 6px;
+  border: 1px solid #e3f2fd;
+  min-width: 80px;
+}
+
+.timeline-stats.horizontal .timeline-stat .stat-number {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1976d2;
+  margin-bottom: 0.25rem;
+}
+
+.timeline-stats.horizontal .timeline-stat .stat-label {
   font-size: 0.8rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.timeline-container.main-timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 1rem;
+  padding: 2rem;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  max-height: 600px;
+  overflow-y: auto;
+  border: 2px solid #e3f2fd;
+}
+
+.note-block.main-block {
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
   font-family: monospace;
   cursor: pointer;
   transition: all 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 120px;
+  max-width: 160px;
+  min-height: 90px;
+  justify-content: center;
+}
+
+.note-block.main-block:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+}
+
+.note-block.main-block .word-text {
+  font-weight: 700;
+  color: #333;
+  text-align: center;
+  word-break: break-word;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  line-height: 1.3;
+  width: 100%;
+  hyphens: auto;
+}
+
+.note-block.main-block .word-note {
+  font-size: 0.8rem;
+  color: #666;
+  text-align: center;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.note-block.main-block.valid {
+  background: linear-gradient(135deg, #e8f5e8, #c8e6c9);
+  color: #2e7d32;
+  border: 2px solid #4caf50;
+}
+
+.note-block.main-block.valid .word-text {
+  color: #2e7d32;
+}
+
+.note-block.main-block.valid .word-note {
+  color: #1b5e20;
+  font-weight: 600;
+}
+
+.note-block.main-block.invalid {
+  background: linear-gradient(135deg, #fafafa, #e0e0e0);
+  color: #666;
+  border: 2px solid #bdbdbd;
+}
+
+.note-block.main-block.invalid .word-text {
+  color: #666;
+}
+
+.note-block.main-block.invalid .word-note {
+  color: #999;
+}
+
+.note-block {
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-family: monospace;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 50px;
+  max-width: 80px;
+}
+
+.word-text {
+  font-weight: 600;
+  color: #333;
+  text-align: center;
+  word-break: break-word;
+  margin-bottom: 0.25rem;
+}
+
+.word-note {
+  font-size: 0.6rem;
+  color: #666;
+  text-align: center;
+  font-weight: 500;
 }
 
 .note-block.valid {
@@ -565,10 +746,26 @@ export default {
   border: 1px solid #c8e6c9;
 }
 
+.note-block.valid .word-text {
+  color: #2e7d32;
+}
+
+.note-block.valid .word-note {
+  color: #1b5e20;
+}
+
 .note-block.invalid {
   background: #fafafa;
   color: #666;
   border: 1px solid #e0e0e0;
+}
+
+.note-block.invalid .word-text {
+  color: #666;
+}
+
+.note-block.invalid .word-note {
+  color: #999;
 }
 
 .note-block:hover {

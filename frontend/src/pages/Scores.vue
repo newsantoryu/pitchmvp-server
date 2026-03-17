@@ -1,12 +1,14 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { listScores, deleteScore } from '../services/api.js'
+import { listScores, deleteScore, updateScore } from '../services/api.js'
 
 const router = useRouter()
 const scores = ref([])
 const loading = ref(true)
 const error = ref(null)
+const editingId = ref(null)
+const editingTitle = ref('')
 
 const scoresSorted = computed(() => 
   scores.value.sort((a, b) => b.id - a.id)
@@ -46,6 +48,44 @@ async function deleteScoreItem(id) {
       error.value = err.message
     }
   }
+}
+
+function startEditing(score) {
+  editingId.value = score.id
+  editingTitle.value = score.title
+  
+  // Focar no input automaticamente
+  nextTick(() => {
+    const input = document.querySelector('.edit-input')
+    if (input) {
+      input.focus()
+      input.select()
+    }
+  })
+}
+
+async function saveEdit(id) {
+  try {
+    console.log('💾 Atualizando título da cifra:', id, editingTitle.value)
+    const updatedScore = await updateScore(id, editingTitle.value)
+    
+    // Atualizar na lista local
+    const scoreIndex = scores.value.findIndex(s => s.id === id)
+    if (scoreIndex > -1) {
+      scores.value[scoreIndex] = updatedScore
+    }
+    
+    console.log('✅ Título atualizado com sucesso!')
+    cancelEdit()
+  } catch (err) {
+    console.error('❌ Erro ao atualizar título:', err)
+    error.value = err.message
+  }
+}
+
+function cancelEdit() {
+  editingId.value = null
+  editingTitle.value = ''
 }
 
 function formatDate(dateString) {
@@ -106,8 +146,34 @@ onMounted(() => {
         @click="viewTranscription(score.id)"
       >
         <div class="score-header">
-          <h3>{{ score.title }}</h3>
-          <span class="score-id">#{{ score.id }}</span>
+          <div v-if="editingId === score.id" class="edit-form" @click.stop>
+            <input 
+              v-model="editingTitle" 
+              @keyup.enter="saveEdit(score.id)"
+              @keyup.escape="cancelEdit()"
+              @click.stop
+              class="edit-input"
+              placeholder="Digite o título..."
+              ref="editInput"
+            />
+            <div class="edit-actions">
+              <button @click.stop="saveEdit(score.id)" class="save-btn" title="Salvar">
+                💾
+              </button>
+              <button @click.stop="cancelEdit" class="cancel-btn" title="Cancelar">
+                ❌
+              </button>
+            </div>
+          </div>
+          <div v-else class="title-display" @click.stop>
+            <h3>{{ score.title }}</h3>
+            <div class="title-actions">
+              <button @click.stop="startEditing(score)" class="edit-title-btn" title="Editar título">
+                ✏️
+              </button>
+              <span class="score-id">#{{ score.id }}</span>
+            </div>
+          </div>
         </div>
         
         <div class="score-info">
@@ -276,11 +342,100 @@ onMounted(() => {
   border-bottom: 1px solid #e0e0e0;
 }
 
-.score-header h3 {
+.edit-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.edit-input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 2px solid #2196f3;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  background: white;
+  outline: none;
+}
+
+.edit-input:focus {
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+}
+
+.edit-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.save-btn,
+.cancel-btn {
+  padding: 0.5rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.save-btn {
+  background: #4caf50;
+  color: white;
+}
+
+.save-btn:hover {
+  background: #45a049;
+}
+
+.cancel-btn {
+  background: #f44336;
+  color: white;
+}
+
+.cancel-btn:hover {
+  background: #d32f2f;
+}
+
+.title-display {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.title-display h3 {
   margin: 0;
   color: #333;
   font-size: 1.2rem;
   flex: 1;
+}
+
+.title-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.edit-title-btn {
+  padding: 0.25rem 0.5rem;
+  background: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.edit-title-btn:hover {
+  background: #1976d2;
 }
 
 .score-id {

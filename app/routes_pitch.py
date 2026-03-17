@@ -169,7 +169,7 @@ def get_job(job_id: str):
 def list_scores():
     with get_db_session() as db:
         scores = db.query(Score).order_by(Score.id.desc()).all()
-        return [{"id": s.id, "title": s.title, "duration": s.duration, "language": s.language} for s in scores]
+        return [{"id": s.id, "title": s.title, "duration": s.duration, "language": s.language, "words": s.words} for s in scores]
 
 @router.get("/scores/{score_id}")
 def get_score(score_id: int):
@@ -178,6 +178,24 @@ def get_score(score_id: int):
         if not score:
             raise HTTPException(status_code=404, detail="Score não encontrado")
         return {"id": score.id, "title": score.title, "duration": score.duration, "language": score.language, "words": score.words}
+
+@router.put("/scores/{score_id}")
+def update_score(score_id: int, title: str = Form(...)):
+    with get_db_session() as db:
+        score = db.query(Score).filter(Score.id == score_id).first()
+        if not score:
+            raise HTTPException(status_code=404, detail="Score não encontrado")
+        
+        score.title = title
+        db.commit()
+        db.refresh(score)
+        
+        return {
+            "id": score.id,
+            "title": score.title,
+            "duration": score.duration,
+            "language": score.language
+        }
 
 @router.delete("/scores/{score_id}")
 def delete_score(score_id: int):

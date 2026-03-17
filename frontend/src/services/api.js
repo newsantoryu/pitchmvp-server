@@ -96,6 +96,21 @@ export async function deleteScore(scoreId) {
 }
 
 /**
+ * Atualiza título de um score
+ */
+export async function updateScore(scoreId, title) {
+  const formData = new FormData()
+  formData.append('title', title)
+
+  const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}`, {
+    method: 'PUT',
+    body: formData
+  })
+  if (!response.ok) throw new Error('Erro ao atualizar score')
+  return response.json()
+}
+
+/**
  * Carrega lista de cifras salvas
  */
 export async function loadScores() {
