@@ -14,62 +14,141 @@ const { currentPitch, currentNote, isDetecting, init, startDetection, stopDetect
 const isInitialized = ref(false)
 const errorMessage = ref('')
 const voiceGender = ref('auto')
+const currentFrequency = ref('0.00 Hz')
+const currentConfidence = ref(0)
+const isProcessing = ref(false)
+
+// Gráfico
+const canvasRef = ref(null)
+const pitchHistory = ref([])
+const maxHistoryLength = 100
 
 let animationFrame = null
 
 async function initializePitchDetection() {
   try {
+    if (isInitialized.value) return true
+    
+    isProcessing.value = true
+    errorMessage.value = ''
+    
+    console.log('🔄 Inicializando detecção de pitch local...')
+    
+    // Inicializar Web Audio API
     const initialized = await init()
     if (initialized) {
       isInitialized.value = true
-      console.log('🎵 Essentia.js inicializado')
+      console.log('✅ Web Audio API inicializado com sucesso')
+      return true
+    } else {
+      throw new Error('Falha ao inicializar Web Audio API')
     }
   } catch (error) {
     console.error('❌ Erro ao inicializar:', error)
-    errorMessage.value = 'Erro ao inicializar detecção de pitch'
+    errorMessage.value = `Erro ao inicializar detecção: ${error.message}`
+    return false
+  } finally {
+    isProcessing.value = false
   }
 }
 
 async function startRealtimeDetection() {
   try {
+    errorMessage.value = ''
+    
     if (!isInitialized.value) {
-      await initializePitchDetection()
+      const success = await initializePitchDetection()
+      if (!success) {
+        throw new Error('Não foi possível inicializar a detecção')
+      }
     }
+    
+    console.log('🎤 Iniciando microfone...')
     
     // Iniciar microfone
     const stream = await start()
+    if (!stream) {
+      throw new Error('Não foi possível acessar o microfone')
+    }
+    
+    console.log('🎯 Iniciando detecção de pitch...')
     
     // Iniciar detecção de pitch
     await startDetection(stream, voiceGender.value, (result) => {
       // Atualizar store
-      pitchStore.updatePitch(result)
+      try {
+        pitchStore.updatePitch(result)
+        
+        // Atualizar estado local
+        currentFrequency.value = `${result.frequency.toFixed(2)} Hz`
+        currentConfidence.value = result.confidence
+        
+        // Adicionar ao histórico do gráfico
+        if (result.frequency > 0) {
+          pitchHistory.value.push({
+            frequency: result.frequency,
+            note: result.note,
+            timestamp: Date.now()
+          })
+          
+          // Manter apenas os últimos N pontos
+          if (pitchHistory.value.length > maxHistoryLength) {
+            pitchHistory.value.shift()
+          }
+        }
+        
+        // Atualizar gráfico
+        updateChart()
+        
+        if (result.frequency > 0) {
+          console.log('🎵 Pitch detectado:', result.note, result.frequency.toFixed(2) + 'Hz')
+        }
+      } catch (storeError) {
+        console.warn('⚠️ Erro ao atualizar store:', storeError)
+      }
     })
     
     // Iniciar loop de animação
     startAnimationLoop()
     
-    console.log('🎯 Detecção em tempo real iniciada')
+    console.log('✅ Detecção em tempo real iniciada com sucesso')
     
   } catch (error) {
     console.error('❌ Erro ao iniciar detecção:', error)
-    errorMessage.value = error.message
+    errorMessage.value = `Erro ao iniciar: ${error.message}`
   }
 }
 
 function stopRealtimeDetection() {
-  stopDetection()
-  stop()
-  stopAnimationLoop()
-  pitchStore.stopDetection()
-  console.log('⏹️ Detecção em tempo real parada')
+  try {
+    console.log('⏹️ Parando detecção...')
+    
+    stopDetection()
+    stop()
+    stopAnimationLoop()
+    pitchStore.stopDetection()
+    
+    // Resetar estado
+    currentFrequency.value = '0.00 Hz'
+    currentConfidence.value = 0
+    
+    console.log('✅ Detecção parada com sucesso')
+    
+  } catch (error) {
+    console.error('❌ Erro ao parar detecção:', error)
+  }
 }
 
 function startAnimationLoop() {
   const animate = () => {
     if (isDetecting.value) {
       // Obter dados do áudio (opcional, para visualização)
-      const audioData = getAudioData()
-      // Processar dados se necessário
+      try {
+        const audioData = getAudioData()
+        // Processar dados se necessário
+      } catch (error) {
+        // Ignorar erros de áudio
+      }
       
       animationFrame = requestAnimationFrame(animate)
     }
@@ -84,6 +163,118 @@ function stopAnimationLoop() {
   }
 }
 
+function updateChart() {
+  if (!canvasRef.value) {
+    console.log('⚠️ Canvas não disponível')
+    return
+  }
+  
+  if (pitchHistory.value.length === 0) {
+    console.log('⚠️ Nenhum dado de pitch para desenhar')
+    return
+  }
+  
+  console.log('📊 Atualizando gráfico com', pitchHistory.value.length, 'pontos')
+  
+  const canvas = canvasRef.value
+  const ctx = canvas.getContext('2d')
+  const width = canvas.width
+  const height = canvas.height
+  
+  // Limpa canvas
+  ctx.clearRect(0, 0, width, height)
+  
+  // Configuração do gráfico
+  const padding = 40
+  const graphWidth = width - padding * 2
+  const graphHeight = height - padding * 2
+  
+  // Encontra frequências mínima e máxima
+  const frequencies = pitchHistory.value.map(p => p.frequency).filter(f => f > 0)
+  if (frequencies.length === 0) {
+    console.log('⚠️ Nenhuma frequência válida encontrada')
+    return
+  }
+  
+  const minFreq = Math.min(...frequencies)
+  const maxFreq = Math.max(...frequencies)
+  const freqRange = maxFreq - minFreq || 1
+  
+  console.log('📊 Range de frequência:', minFreq.toFixed(1), '-', maxFreq.toFixed(1), 'Hz')
+  
+  // Desenha grade
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'
+  ctx.lineWidth = 1
+  
+  // Linhas horizontais
+  for (let i = 0; i <= 5; i++) {
+    const y = padding + (graphHeight / 5) * i
+    ctx.beginPath()
+    ctx.moveTo(padding, y)
+    ctx.lineTo(width - padding, y)
+    ctx.stroke()
+    
+    // Labels de frequência
+    const freq = maxFreq - (freqRange / 5) * i
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
+    ctx.font = '10px monospace'
+    ctx.textAlign = 'right'
+    ctx.fillText(freq.toFixed(0) + ' Hz', padding - 5, y + 3)
+  }
+  
+  // Linhas verticais
+  for (let i = 0; i <= 10; i++) {
+    const x = padding + (graphWidth / 10) * i
+    ctx.beginPath()
+    ctx.moveTo(x, padding)
+    ctx.lineTo(x, height - padding)
+    ctx.stroke()
+  }
+  
+  // Desenha linha do pitch
+  if (pitchHistory.value.length > 1) {
+    ctx.strokeStyle = '#4CAF50'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    
+    pitchHistory.value.forEach((point, index) => {
+      if (point.frequency <= 0) return
+      
+      const x = padding + (graphWidth / maxHistoryLength) * index
+      const y = padding + graphHeight - ((point.frequency - minFreq) / freqRange) * graphHeight
+      
+      if (index === 0) {
+        ctx.moveTo(x, y)
+      } else {
+        ctx.lineTo(x, y)
+      }
+    })
+    
+    ctx.stroke()
+    
+    // Desenha pontos
+    ctx.fillStyle = '#4CAF50'
+    pitchHistory.value.forEach((point, index) => {
+      if (point.frequency <= 0) return
+      
+      const x = padding + (graphWidth / maxHistoryLength) * index
+      const y = padding + graphHeight - ((point.frequency - minFreq) / freqRange) * graphHeight
+      
+      ctx.beginPath()
+      ctx.arc(x, y, 3, 0, Math.PI * 2)
+      ctx.fill()
+    })
+    
+    console.log('✅ Gráfico desenhado com sucesso')
+  }
+  
+  // Título
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+  ctx.font = '14px sans-serif'
+  ctx.textAlign = 'center'
+  ctx.fillText('Pitch em Tempo Real', width / 2, 20)
+}
+
 function goHome() {
   if (isDetecting.value) {
     stopRealtimeDetection()
@@ -91,11 +282,30 @@ function goHome() {
   router.push('/')
 }
 
+// Função para resetar erros
+function clearError() {
+  errorMessage.value = ''
+}
+
 onMounted(async () => {
+  console.log('🔄 Montando componente RealtimePitch...')
   await initializePitchDetection()
+  
+  // Verifica se o canvas está disponível
+  if (canvasRef.value) {
+    console.log('✅ Canvas disponível no mounted')
+    // Inicializa o canvas com fundo escuro
+    const canvas = canvasRef.value
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  } else {
+    console.log('⚠️ Canvas não disponível no mounted')
+  }
 })
 
 onUnmounted(() => {
+  console.log('🔄 Desmontando componente RealtimePitch...')
   stopRealtimeDetection()
 })
 </script>
@@ -113,13 +323,45 @@ onUnmounted(() => {
       <!-- Status -->
       <div class="status-section">
         <div class="status-card">
-          <h2>🎵 Detecção Ativa</h2>
-          <div class="status-indicator">
-            <div 
-              class="status-dot" 
-              :class="{ 'active': isDetecting }"
-            ></div>
-            <span>{{ isDetecting ? 'Detectando' : 'Inativo' }}</span>
+          <h2>🎵 Status da Detecção</h2>
+          
+          <!-- Status de Inicialização -->
+          <div class="status-item">
+            <div class="status-indicator">
+              <div 
+                class="status-dot" 
+                :class="{ 
+                  'active': isInitialized, 
+                  'loading': isProcessing,
+                  'error': !!errorMessage 
+                }"
+              ></div>
+              <span>
+                {{ isProcessing ? 'Inicializando...' : (isInitialized ? 'Pronto' : 'Não inicializado') }}
+              </span>
+            </div>
+          </div>
+          
+          <!-- Status de Detecção -->
+          <div class="status-item">
+            <div class="status-indicator">
+              <div 
+                class="status-dot" 
+                :class="{ 'active': isDetecting }"
+              ></div>
+              <span>{{ isDetecting ? 'Detectando' : 'Inativo' }}</span>
+            </div>
+          </div>
+          
+          <!-- Status do Microfone -->
+          <div class="status-item">
+            <div class="status-indicator">
+              <div 
+                class="status-dot" 
+                :class="{ 'active': isMicrophoneActive }"
+              ></div>
+              <span>{{ isMicrophoneActive ? 'Microfone Ativo' : 'Microfone Inativo' }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -128,13 +370,13 @@ onUnmounted(() => {
       <div class="pitch-display">
         <div class="current-note">
           <div class="note-value">{{ pitchStore.currentNoteWithOctave }}</div>
-          <div class="note-frequency">{{ pitchStore.frequencyFormatted }}</div>
+          <div class="note-frequency">{{ currentFrequency || pitchStore.frequencyFormatted }}</div>
         </div>
         
         <div class="pitch-details">
           <div class="detail-item">
             <span class="detail-label">Confiança:</span>
-            <span class="detail-value">{{ Math.round(pitchStore.confidence * 100) }}%</span>
+            <span class="detail-value">{{ Math.round((currentConfidence || pitchStore.confidence) * 100) }}%</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Precisão:</span>
@@ -144,6 +386,24 @@ onUnmounted(() => {
             >
               {{ pitchStore.accuracy }}
             </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visualization -->
+      <div class="visualization-section">
+        <div class="viz-card">
+          <h3>📊 Gráfico de Pitch</h3>
+          <div class="chart-wrapper">
+            <canvas 
+              ref="canvasRef"
+              width="800" 
+              height="300"
+              class="pitch-chart"
+            ></canvas>
+            <div v-if="pitchHistory.length === 0" class="chart-status">
+              Aguardando dados de pitch...
+            </div>
           </div>
         </div>
       </div>
@@ -166,10 +426,10 @@ onUnmounted(() => {
           <div class="control-actions">
             <button 
               @click="startRealtimeDetection"
-              :disabled="isDetecting || !isInitialized"
+              :disabled="isDetecting || isProcessing"
               class="start-btn"
             >
-              {{ isDetecting ? 'Detectando...' : 'Iniciar Detecção' }}
+              {{ isProcessing ? 'Inicializando...' : (isDetecting ? 'Detectando...' : 'Iniciar Detecção') }}
             </button>
             
             <button 
@@ -183,65 +443,11 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Visualization -->
-      <div class="visualization-section">
-        <div class="viz-card">
-          <h3>📊 Visualização</h3>
-          <div class="pitch-visualization">
-            <!-- Frequência Meter -->
-            <div class="frequency-meter">
-              <div class="meter-label">Frequência</div>
-              <div class="meter-bar">
-                <div 
-                  class="meter-fill" 
-                  :style="{ 
-                    width: Math.min((pitchStore.frequency / 1000) * 100, 100) + '%' 
-                  }"
-                ></div>
-              </div>
-              <div class="meter-value">{{ pitchStore.frequencyFormatted }}</div>
-            </div>
-            
-            <!-- Confidence Meter -->
-            <div class="confidence-meter">
-              <div class="meter-label">Confiança</div>
-              <div class="meter-bar">
-                <div 
-                  class="meter-fill confidence" 
-                  :style="{ width: (pitchStore.confidence * 100) + '%' }"
-                ></div>
-              </div>
-              <div class="meter-value">{{ Math.round(pitchStore.confidence * 100) }}%</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Stats -->
-      <div class="stats-section" v-if="pitchStore.pitchHistory.length > 0">
-        <div class="stats-card">
-          <h3>📈 Estatísticas da Sessão</h3>
-          <div class="stats-grid">
-            <div class="stat-item">
-              <span class="stat-label">Amostras:</span>
-              <span class="stat-value">{{ pitchStore.stats.totalSamples }}</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">Média:</span>
-              <span class="stat-value">{{ pitchStore.stats.averageFrequency.toFixed(1) }} Hz</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">Nota mais comum:</span>
-              <span class="stat-value">{{ pitchStore.stats.mostFrequentNote || '-' }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Error Message -->
       <div v-if="errorMessage" class="error-message">
         <span class="error-icon">❌</span>
         <span class="error-text">{{ errorMessage }}</span>
+        <button @click="clearError" class="clear-error-btn">×</button>
       </div>
 
       <!-- Info -->
@@ -313,22 +519,62 @@ onUnmounted(() => {
 
 .status-section,
 .controls-section,
-.visualization-section,
-.stats-section {
+.visualization-section {
   display: flex;
   justify-content: center;
+  margin: 2rem 0;
 }
 
 .status-card,
 .control-card,
-.viz-card,
-.stats-card {
+.viz-card {
   background: rgba(255, 255, 255, 0.95);
   padding: 2rem;
   border-radius: 16px;
   backdrop-filter: blur(10px);
   width: 100%;
   max-width: 400px;
+}
+
+.viz-card {
+  max-width: 900px;
+}
+
+.status-card h2,
+.control-card h3,
+.viz-card h3 {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  color: #333;
+  text-align: center;
+}
+
+.chart-wrapper {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.pitch-chart {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+}
+
+.chart-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 1.1rem;
+  font-weight: 500;
+  text-align: center;
 }
 
 .status-card h2,
@@ -357,6 +603,56 @@ onUnmounted(() => {
 .status-dot.active {
   background: #4caf50;
   animation: pulse 1.5s infinite;
+}
+
+.status-dot.loading {
+  background: #ff9800;
+  animation: spin 1s infinite;
+}
+
+.status-dot.error {
+  background: #f44336;
+  animation: blink 0.5s infinite;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.status-item:last-child {
+  margin-bottom: 0;
+}
+
+.clear-error-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #f44336;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.clear-error-btn:hover {
+  background: rgba(244, 67, 54, 0.1);
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes blink {
+  0%, 50%, 100% { opacity: 1; }
+  25%, 75% { opacity: 0.5; }
 }
 
 .pitch-display {
@@ -607,9 +903,19 @@ onUnmounted(() => {
     flex-direction: column;
   }
   
-  .stats-grid {
-    grid-template-columns: 1fr;
-    gap: 0.5rem;
+  .chart-wrapper {
+    height: 250px;
+    padding: 0.5rem;
+  }
+  
+  .viz-card {
+    padding: 1rem;
+    max-width: 100%;
+  }
+  
+  .status-card,
+  .control-card {
+    padding: 1rem;
   }
 }
 </style>
