@@ -175,11 +175,24 @@ async function sendFrameToAPI() {
     // Atualizar gráfico
     updateChart()
     
-    // Atualiza store
-    pitchStore.setFrequency(result.frequency || 0)
-    pitchStore.setNote(result.note || '-')
-    pitchStore.setConfidence(result.confidence || 0)
-    pitchStore.setDetecting(true)
+    // Atualiza store com tratamento de erro
+    try {
+      if (pitchStore.setFrequency && typeof pitchStore.setFrequency === 'function') {
+        pitchStore.setFrequency(result.frequency || 0)
+      }
+      if (pitchStore.setNote && typeof pitchStore.setNote === 'function') {
+        pitchStore.setNote(result.note || '-')
+      }
+      if (pitchStore.setConfidence && typeof pitchStore.setConfidence === 'function') {
+        pitchStore.setConfidence(result.confidence || 0)
+      }
+      if (pitchStore.setDetecting && typeof pitchStore.setDetecting === 'function') {
+        pitchStore.setDetecting(true)
+      }
+    } catch (storeError) {
+      console.warn('⚠️ Erro ao atualizar store:', storeError)
+      // Não interrompe o processo, apenas loga o erro
+    }
 
   } catch (error) {
     console.error('❌ Erro ao enviar frame para API:', error)
