@@ -37,14 +37,20 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
             fmin=vr["fmin"], fmax=vr["fmax"],
             model="full", batch_size=1024, device="cpu", return_periodicity=True
         )
-        pitch = pitch[0].cpu().numpy()
-        periodicity = periodicity[0].cpu().numpy()
-        times = np.arange(len(pitch)) * 0.01
-        # Masculino: limiar 0.78 para captar mais frames (timbre costuma dar periodicity menor)
+        
+        # ✅ Liberar tensors imediatamente
+        pitch_np = pitch[0].cpu().numpy()
+        periodicity_np = periodicity[0].cpu().numpy()
+        
+        # ✅ Limpar tensors do torch
+        del pitch, periodicity, audio_t
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        times = np.arange(len(pitch_np)) * 0.01
         conf_min = 0.78 if voice_gender == "male" else 0.85
         frames = [
             {"time": float(t), "freq": float(p)}
-            for t, p, c in zip(times, pitch, periodicity)
+            for t, p, c in zip(times, pitch_np, periodicity_np)
             if c >= conf_min and p > 0 and vr["fmin"] <= p <= vr["fmax"]
         ]
         logger.info(f"torchcrepe: {len(frames)} frames ({voice_gender}, conf>={conf_min})")
@@ -57,9 +63,26 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
             ).flatten()
             for i in range(len(frames)):
                 frames[i]["freq"] = float(smooth[i])
+        
+        # ✅ Forçar garbage collection
+        import gc
+        gc.collect()
+        
         return frames
+        
     except Exception as e:
         logger.warning(f"torchcrepe indisponível ({e}), usando pYIN...")
+        
+        # ✅ Cleanup em caso de erro
+        if 'audio_t' in locals():
+            del audio_t
+        if 'pitch' in locals():
+            del pitch
+        if 'periodicity' in locals():
+            del periodicity
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        import gc
+        gc.collect()
 
     # Fallback: pYIN
     try:

@@ -8,6 +8,8 @@ class Score(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     title = Column(String, index=True)
+    
+    artist = Column(String, index=True)  # Novo: nome do artista
 
     language = Column(String)
 

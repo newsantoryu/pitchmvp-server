@@ -9,6 +9,9 @@ const transcriptionStore = useTranscriptionStore()
 const selectedFile = ref(null)
 const isDragging = ref(false)
 const voiceGender = ref('auto')
+const transcriptionLanguage = ref('en') // Padrão alterado para inglês
+const songTitle = ref('') // Novo: título da música
+const songArtist = ref('') // Novo: nome do artista
 
 function handleFileSelect(event) {
   const file = event.target.files[0]
@@ -42,15 +45,26 @@ async function uploadFile() {
   if (!selectedFile.value) return
   
   try {
+    console.log('🎵 Iniciando transcrição do arquivo:', selectedFile.value.name)
+    console.log('� Título da música:', songTitle.value || 'Não informado')
+    console.log('🎤 Nome do artista:', songArtist.value || 'Não informado')
+    console.log('� Idioma da transcrição:', transcriptionLanguage.value)
+    console.log('👤 Gênero vocal:', voiceGender.value)
+    
     await transcriptionStore.transcribeAudioFile(selectedFile.value, {
-      voiceGender: voiceGender.value
+      voiceGender: voiceGender.value,
+      language: transcriptionLanguage.value, // Incluir idioma
+      title: songTitle.value, // Novo: título da música
+      artist: songArtist.value // Novo: nome do artista
     })
+    
+    console.log('✅ Transcrição concluída com sucesso!')
     
     // Navegar para resultados
     router.push('/results')
     
   } catch (error) {
-    console.error('❌ Erro no upload:', error)
+    console.error('❌ Erro na transcrição:', error)
   }
 }
 
@@ -65,6 +79,57 @@ function formatFileSize(bytes) {
 function goHome() {
   router.push('/')
 }
+
+function getProgressMessage() {
+  const status = transcriptionStore.jobStatus
+  const messages = {
+    'queued': transcriptionLanguage.value === 'pt' ? 'Arquivo na fila...' : 'File queued...',
+    'transcribing': transcriptionLanguage.value === 'pt' ? 'Transcrevendo áudio...' : 'Transcribing audio...',
+    'pitch': transcriptionLanguage.value === 'pt' ? 'Analisando precisão musical (CREPE)...' : 'Analyzing musical precision (CREPE)...',
+    'done': transcriptionLanguage.value === 'pt' ? 'Transcrição concluída!' : 'Transcription completed!',
+    'error': transcriptionLanguage.value === 'pt' ? 'Erro na transcrição' : 'Transcription error'
+  }
+  return messages[status] || (transcriptionLanguage.value === 'pt' ? 'Processando...' : 'Processing...')
+}
+
+function getProgressDetail() {
+  const status = transcriptionStore.jobStatus
+  const progress = transcriptionStore.progress
+  const details = {
+    'queued': transcriptionLanguage.value === 'pt' 
+      ? 'Aguardando início do processamento' 
+      : 'Waiting for processing to start',
+    'transcribing': transcriptionLanguage.value === 'pt' 
+      ? `Convertendo fala em texto (${transcriptionLanguage.value === 'pt' ? 'Português' : 'English'}) - ${progress}%` 
+      : `Converting speech to text (${transcriptionLanguage.value === 'pt' ? 'Portuguese' : 'English'}) - ${progress}%`,
+    'pitch': transcriptionLanguage.value === 'pt' 
+      ? `Análise de precisão musical com algoritmo CREPE - ${progress}%` 
+      : `Musical precision analysis with CREPE algorithm - ${progress}%`,
+    'done': transcriptionLanguage.value === 'pt' 
+      ? 'Processamento de alta precisão concluído com sucesso!' 
+      : 'High precision processing completed successfully!',
+    'error': transcriptionLanguage.value === 'pt' 
+      ? 'Ocorreu um erro durante o processamento' 
+      : 'An error occurred during processing'
+  }
+  
+  // Mensagens especiais para processamentos longos
+  if (status === 'transcribing' && progress >= 20 && progress <= 60) {
+    return transcriptionLanguage.value === 'pt' 
+      ? 'Processando áudio com IA... Isso pode levar alguns minutos.'
+      : 'Processing audio with AI... This may take a few minutes.'
+  }
+  
+  if (status === 'pitch') {
+    return transcriptionLanguage.value === 'pt' 
+      ? 'Análise musical de alta precisão em andamento. O algoritmo CREPE foca em precisão máxima, não velocidade. Tempo estimado: 15-25 minutos.'
+      : 'High-precision musical analysis in progress. The CREPE algorithm focuses on maximum precision, not speed. Estimated time: 15-25 minutes.'
+  }
+  
+  return details[status] || (transcriptionLanguage.value === 'pt' 
+    ? `Processando sua transcrição com alta precisão... ${progress}%` 
+    : `Processing your transcription with high precision... ${progress}%`)
+}
 </script>
 
 <template>
@@ -72,7 +137,10 @@ function goHome() {
     <!-- Header -->
     <header class="page-header">
       <button @click="goHome" class="back-btn">← Home</button>
-      <h1>📁 Upload de Áudio</h1>
+      <div>
+        <h1>🎵 Transcrição de Áudio</h1>
+        <p class="header-subtitle">Converta áudio em texto com IA avançada</p>
+      </div>
     </header>
 
     <!-- Main Content -->
@@ -94,20 +162,20 @@ function goHome() {
         >
         <label for="file-upload" class="upload-label">
           <div class="upload-icon">
-            {{ selectedFile ? '📄' : '📁' }}
+            {{ selectedFile ? '🎵' : '📁' }}
           </div>
           <div class="upload-text">
             <p v-if="!selectedFile">
-              Arraste um arquivo ou clique para selecionar
+              Arraste um arquivo de áudio para transcrever
             </p>
             <p v-else class="selected-file">
               {{ selectedFile.name }}
             </p>
             <small v-if="!selectedFile">
-              MP3, WAV, M4A, OGG (max 50MB)
+              MP3, WAV, M4A, OGG (max 50MB) • Transcrição automática
             </small>
             <small v-else>
-              {{ formatFileSize(selectedFile.size) }}
+              {{ formatFileSize(selectedFile.size) }} • Pronto para transcrever
             </small>
           </div>
         </label>
@@ -115,10 +183,45 @@ function goHome() {
 
       <!-- Settings -->
       <div class="upload-settings" v-if="selectedFile">
-        <h3>⚙️ Configurações</h3>
+        <h3>⚙️ Configurações de Transcrição</h3>
+        
         <div class="setting-group">
           <label>
-            <span>Gênero Vocal:</span>
+            <span>🎼 Título da Música:</span>
+            <input 
+              type="text" 
+              v-model="songTitle" 
+              placeholder="Ex: Minha Canção Favorita"
+              class="text-input"
+            >
+          </label>
+        </div>
+        
+        <div class="setting-group">
+          <label>
+            <span>🎤 Nome do Artista:</span>
+            <input 
+              type="text" 
+              v-model="songArtist" 
+              placeholder="Ex: João Silva"
+              class="text-input"
+            >
+          </label>
+        </div>
+        
+        <div class="setting-group">
+          <label>
+            <span> Idioma do Áudio:</span>
+            <select v-model="transcriptionLanguage">
+              <option value="en">English (US)</option>
+              <option value="pt">Português (Brasil)</option>
+            </select>
+          </label>
+        </div>
+        
+        <div class="setting-group">
+          <label>
+            <span>👤 Gênero Vocal:</span>
             <select v-model="voiceGender">
               <option value="auto">Auto</option>
               <option value="male">Masculino</option>
@@ -135,7 +238,7 @@ function goHome() {
           :disabled="transcriptionStore.isProcessing"
           class="upload-btn"
         >
-          {{ transcriptionStore.isProcessing ? 'Processando...' : 'Analisar Áudio' }}
+          {{ transcriptionStore.isProcessing ? 'Transcrevendo...' : 'Transcrever Áudio' }}
         </button>
         
         <button 
@@ -149,7 +252,7 @@ function goHome() {
 
       <!-- Progress -->
       <div v-if="transcriptionStore.isProcessing" class="progress-section">
-        <h3>🔄 Processando...</h3>
+        <h3>🎵 {{ getProgressMessage() }}</h3>
         <div class="progress-bar">
           <div 
             class="progress-fill" 
@@ -158,26 +261,46 @@ function goHome() {
         </div>
         <p>{{ transcriptionStore.progress }}%</p>
         <p>Status: {{ transcriptionStore.jobStatus }}</p>
+        <p class="progress-detail">
+          {{ getProgressDetail() }}
+        </p>
+        
+        <!-- Aviso sobre processamento longo -->
+        <div v-if="transcriptionStore.jobStatus === 'pitch'" class="long-processing-warning">
+          <div class="warning-icon">⏱️</div>
+          <div class="warning-text">
+            <strong>{{ transcriptionLanguage === 'pt' ? 'Processamento Longo' : 'Long Processing' }}</strong>
+            <p>{{ transcriptionLanguage === 'pt' 
+              ? 'Análise musical de alta precisão pode levar 15-25 minutos. O algoritmo CREPE prioriza precisão máxima sobre velocidade.'
+              : 'High-precision musical analysis may take 15-25 minutes. The CREPE algorithm prioritizes maximum precision over speed.' }}</p>
+          </div>
+        </div>
       </div>
 
       <!-- Info -->
       <div class="upload-info">
         <div class="info-item">
-          <span class="info-icon">ℹ️</span>
+          <span class="info-icon">🎵</span>
           <span class="info-text">
-            Formatos suportados: MP3, WAV, M4A, OGG, FLAC
+            Transcrição automática de áudio para texto com IA
           </span>
         </div>
         <div class="info-item">
-          <span class="info-icon">🔒</span>
+          <span class="info-icon">🌐</span>
           <span class="info-text">
-            Seus arquivos são processados com segurança
+            Suporte para Português (Brasil) e Inglês (US)
           </span>
         </div>
         <div class="info-item">
           <span class="info-icon">⚡</span>
           <span class="info-text">
-            Processamento rápido com IA avançada
+            Processamento rápido com reconhecimento avançado de fala
+          </span>
+        </div>
+        <div class="info-item">
+          <span class="info-icon">🔒</span>
+          <span class="info-text">
+            Seus arquivos são processados com segurança e privacidade
           </span>
         </div>
       </div>
@@ -217,6 +340,13 @@ function goHome() {
 .page-header h1 {
   font-size: 2rem;
   margin: 0;
+}
+
+.header-subtitle {
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0.5rem 0 0 0;
+  font-size: 1.1rem;
+  font-weight: 400;
 }
 
 .upload-content {
@@ -315,6 +445,22 @@ function goHome() {
   background: white;
 }
 
+.text-input {
+  padding: 0.5rem 1rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: white;
+  font-size: 1rem;
+  width: 100%;
+  max-width: 300px;
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: #4caf50;
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+}
+
 .upload-actions {
   display: flex;
   gap: 1rem;
@@ -385,6 +531,49 @@ function goHome() {
   height: 100%;
   background: linear-gradient(90deg, #2196f3, #4caf50);
   transition: width 0.3s ease;
+}
+
+.progress-detail {
+  color: #666;
+  font-size: 0.9rem;
+  font-style: italic;
+  margin-top: 0.5rem;
+}
+
+.long-processing-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  background: linear-gradient(135deg, #fff3cd, #f8f9fa);
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(255, 193, 7, 0.1);
+}
+
+.warning-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+  margin-top: 0.25rem;
+}
+
+.warning-text {
+  flex: 1;
+}
+
+.warning-text strong {
+  color: #856404;
+  font-size: 0.95rem;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.warning-text p {
+  color: #856404;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .upload-info {

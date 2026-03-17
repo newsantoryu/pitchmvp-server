@@ -15,10 +15,13 @@ export async function health() {
 /**
  * Envia arquivo para transcrição (batch)
  */
-export async function transcribeFile(file, voiceGender = 'auto', language = 'pt') {
+export async function transcribeFile(file, voiceGender = 'auto', language = 'pt', title = '', artist = '') {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('voice_gender', voiceGender)
+  formData.append('language', language) // Adicionado: parâmetro de idioma
+  formData.append('title', title) // Adicionado: título da música
+  formData.append('artist', artist) // Adicionado: nome do artista
 
   const response = await fetch(`${API_BASE}/pitch/transcribe-file`, {
     method: 'POST',
@@ -32,7 +35,7 @@ export async function transcribeFile(file, voiceGender = 'auto', language = 'pt'
 /**
  * Envia URL para transcrição
  */
-export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', language = 'pt') {
+export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', language = 'pt', title = '', artist = '') {
   const response = await fetch(`${API_BASE}/pitch/transcribe`, {
     method: 'POST',
     headers: {
@@ -42,7 +45,9 @@ export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', lan
       audio_url: audioUrl,
       anon_key: anonKey,
       voice_gender: voiceGender,
-      language: language
+      language: language,
+      title: title, // Adicionado: título da música
+      artist: artist  // Adicionado: nome do artista
     })
   })
 
@@ -120,10 +125,11 @@ export async function transcribeFrame(samples, sampleRate = 44100) {
 /**
  * Envia arquivo para processamento em tempo real
  */
-export async function transcribeRealtimeFile(file, voiceGender = 'auto') {
+export async function transcribeRealtimeFile(file, voiceGender = 'auto', language = 'pt') {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('voice_gender', voiceGender)
+  formData.append('language', language) // Adicionado: parâmetro de idioma
 
   const response = await fetch(`${API_BASE}/pitch/transcribe-file`, {
     method: 'POST',

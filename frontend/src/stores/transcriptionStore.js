@@ -9,30 +9,37 @@ export const useTranscriptionStore = defineStore("transcription", () => {
   const isProcessing = ref(false)
   const progress = ref(0)
   const error = ref(null)
-  
+
   // Getters
   const hasActiveJob = computed(() => currentJob.value !== null)
   const jobStatus = computed(() => currentJob.value?.status || "idle")
   const latestTranscription = computed(() => transcriptions.value[0] || null)
-  
+
   // Actions
   async function transcribeAudioFile(file, options = {}) {
     try {
       isProcessing.value = true
       progress.value = 0
       error.value = null
-      
+
       console.log("📁 Enviando arquivo para transcrição:", file.name)
-      
-      // Enviar arquivo
-      const response = await transcribeFile(file, options.voiceGender || "auto")
+      console.log("🎼 Título da música:", options.title || 'Não informado')
+
+      // Enviar arquivo com todos os parâmetros
+      const response = await transcribeFile(
+        file,
+        options.voiceGender || "auto",
+        options.language || "en",
+        options.title || "",
+        options.artist || ""
+      )
       currentJob.value = response
-      
+
       // Polling do job
       await pollJob(response.job_id)
-      
+
       return response
-      
+
     } catch (err) {
       console.error("❌ Erro na transcrição:", err)
       error.value = err.message
@@ -40,28 +47,29 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       throw err
     }
   }
-  
+
   async function transcribeAudioUrl(url, options = {}) {
     try {
       isProcessing.value = true
       progress.value = 0
       error.value = null
-      
+
       console.log("🔗 Enviando URL para transcrição:", url)
-      
+
       // Enviar URL
       const response = await transcribeUrl(
-        url, 
-        options.anonKey || "", 
-        options.voiceGender || "auto"
+        url,
+        options.anonKey || "",
+        options.voiceGender || "auto",
+        options.language || "en"  // Padrão alterado para inglês
       )
       currentJob.value = response
-      
+
       // Polling do job
       await pollJob(response.job_id)
-      
+
       return response
-      
+
     } catch (err) {
       console.error("❌ Erro na transcrição da URL:", err)
       error.value = err.message
@@ -69,24 +77,28 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       throw err
     }
   }
-  
+
   async function pollJob(jobId) {
-    const maxAttempts = 120 // 2 minutos
+    const maxAttempts = 1800 // 30 minutos (aumentado para suportar processamentos longos)
     let attempts = 0
-    
+
     while (attempts < maxAttempts) {
       try {
         const job = await getJobStatus(jobId)
         currentJob.value = job
-        
-        // Simular progresso baseado no status
+
+        console.log('🔄 Status do job:', job.status, 'Progress:', job.progress)
+
+        // Atualizar progresso baseado no status do backend
         if (job.status === "queued") {
           progress.value = Math.min(10, attempts * 2)
-        } else if (job.status === "processing") {
-          progress.value = Math.min(90, 10 + (attempts * 3))
+        } else if (job.status === "transcribing") {
+          progress.value = Math.min(70, 10 + (attempts * 2))
+        } else if (job.status === "pitch") {
+          progress.value = Math.min(90, 70 + (attempts * 2))
         } else if (job.status === "done") {
           progress.value = 100
-          
+
           // Adicionar aos resultados
           if (job.result) {
             addTranscription({
@@ -95,16 +107,17 @@ export const useTranscriptionStore = defineStore("transcription", () => {
               createdAt: new Date().toISOString()
             })
           }
-          
+
           isProcessing.value = false
+          console.log('✅ Job concluído com sucesso!')
           return job
         } else if (job.status === "error") {
           throw new Error(job.error || "Erro no processamento")
         }
-        
+
         attempts++
         await new Promise(resolve => setTimeout(resolve, 1000))
-        
+
       } catch (err) {
         console.error("❌ Erro no polling:", err)
         error.value = err.message
@@ -112,25 +125,25 @@ export const useTranscriptionStore = defineStore("transcription", () => {
         throw err
       }
     }
-    
+
     throw new Error("Timeout ao processar transcrição")
   }
-  
+
   function addTranscription(transcription) {
     transcriptions.value.unshift(transcription)
-    
+
     // Limitar histórico
     if (transcriptions.value.length > 50) {
       transcriptions.value = transcriptions.value.slice(0, 50)
     }
-    
+
     console.log("✅ Transcrição adicionada:", transcription.id)
   }
-  
+
   function getTranscription(id) {
     return transcriptions.value.find(t => t.id === id)
   }
-  
+
   function deleteTranscription(id) {
     const index = transcriptions.value.findIndex(t => t.id === id)
     if (index > -1) {
@@ -138,12 +151,12 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       console.log("🗑️ Transcrição deletada:", id)
     }
   }
-  
+
   function clearTranscriptions() {
     transcriptions.value = []
     console.log("🧹 Histórico de transcrições limpo")
   }
-  
+
   function reset() {
     currentJob.value = null
     isProcessing.value = false
@@ -151,7 +164,7 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     error.value = null
     clearTranscriptions()
   }
-  
+
   function cancelCurrentJob() {
     if (currentJob.value) {
       console.log("🚫 Cancelando job:", currentJob.value.job_id)
@@ -160,7 +173,7 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       progress.value = 0
     }
   }
-  
+
   // Exportar dados
   function exportTranscriptions() {
     return {
@@ -169,7 +182,7 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       exportDate: new Date().toISOString()
     }
   }
-  
+
   return {
     // Estado
     currentJob,
@@ -177,12 +190,12 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     isProcessing,
     progress,
     error,
-    
+
     // Getters
     hasActiveJob,
     jobStatus,
     latestTranscription,
-    
+
     // Actions
     transcribeAudioFile,
     transcribeAudioUrl,
