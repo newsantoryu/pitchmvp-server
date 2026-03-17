@@ -20,11 +20,9 @@ class TranscribeRequest(BaseModel):
     anon_key: str
     voice_gender: str = "auto"
     language: str = "en"
-    title: str = ""  # Novo: título da música
-    artist: str = ""  # Novo: nome do artista
 
 # Função de processamento - CORRIGIDA
-def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: str = "en", title: str = "", artist: str = ""):
+def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: str = "en"):
     try:
         # Log memory usage no início
         log_memory_usage()
@@ -96,8 +94,8 @@ def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: st
             # ✅ USAR DATABASE CONTEXT MANAGER
             with get_db_session() as db:
                 score = Score(
-                    title=title or f"Song {job_id}",  # Usa título fornecido ou padrão
-                    artist=artist,  # Usa artista fornecido
+                    title=f"Song {job_id}",  # Padrão sem título
+                    artist="",  # Padrão sem artista
                     language=info.language,
                     duration=round(info.duration, 2),
                     words=words,
@@ -137,7 +135,7 @@ async def transcribe(req: TranscribeRequest, bg: BackgroundTasks):
         tmp_path = tmp.name
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {"status": "queued", "progress": 5}
-    bg.add_task(run_job, job_id, tmp_path, req.voice_gender, req.language, req.title, req.artist)
+    bg.add_task(run_job, job_id, tmp_path, req.voice_gender, req.language)
     return {"job_id": job_id}
 
 @router.post("/transcribe-file")
@@ -145,8 +143,6 @@ async def transcribe_file(
     file: UploadFile = File(...),
     voice_gender: str = Form("auto"),
     language: str = Form("en"),
-    title: str = Form(""),  # Novo: título da música
-    artist: str = Form(""),  # Novo: nome do artista
     bg: BackgroundTasks = None
 ):
     ext = os.path.splitext(file.filename or "")[1].lower() or ".wav"
@@ -156,7 +152,7 @@ async def transcribe_file(
         tmp_path = tmp.name
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {"status": "queued", "progress": 5}
-    bg.add_task(run_job, job_id, tmp_path, voice_gender, language, title, artist)
+    bg.add_task(run_job, job_id, tmp_path, voice_gender, language)
     return {"job_id": job_id}
 
 @router.get("/job/{job_id}")

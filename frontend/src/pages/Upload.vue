@@ -10,8 +10,6 @@ const selectedFile = ref(null)
 const isDragging = ref(false)
 const voiceGender = ref('auto')
 const transcriptionLanguage = ref('en') // Padrão alterado para inglês
-const songTitle = ref('') // Novo: título da música
-const songArtist = ref('') // Novo: nome do artista
 
 function handleFileSelect(event) {
   const file = event.target.files[0]
@@ -42,29 +40,27 @@ function handleDrop(event) {
 }
 
 async function uploadFile() {
-  if (!selectedFile.value) return
-  
+  if (!selectedFile.value) {
+    alert('Por favor, selecione um arquivo de áudio primeiro.')
+    return
+  }
+
   try {
     console.log('🎵 Iniciando transcrição do arquivo:', selectedFile.value.name)
-    console.log('� Título da música:', songTitle.value || 'Não informado')
-    console.log('🎤 Nome do artista:', songArtist.value || 'Não informado')
     console.log('� Idioma da transcrição:', transcriptionLanguage.value)
     console.log('👤 Gênero vocal:', voiceGender.value)
     
     await transcriptionStore.transcribeAudioFile(selectedFile.value, {
       voiceGender: voiceGender.value,
-      language: transcriptionLanguage.value, // Incluir idioma
-      title: songTitle.value, // Novo: título da música
-      artist: songArtist.value // Novo: nome do artista
+      language: transcriptionLanguage.value // Incluir idioma
     })
     
-    console.log('✅ Transcrição concluída com sucesso!')
-    
-    // Navegar para resultados
+    // Redirecionar para resultados
     router.push('/results')
     
-  } catch (error) {
-    console.error('❌ Erro na transcrição:', error)
+  } catch (err) {
+    console.error('❌ Erro na transcrição:', err)
+    alert('Erro na transcrição: ' + err.message)
   }
 }
 
@@ -183,31 +179,7 @@ function getProgressDetail() {
 
       <!-- Settings -->
       <div class="upload-settings" v-if="selectedFile">
-        <h3>⚙️ Configurações de Transcrição</h3>
-        
-        <div class="setting-group">
-          <label>
-            <span>🎼 Título da Música:</span>
-            <input 
-              type="text" 
-              v-model="songTitle" 
-              placeholder="Ex: Minha Canção Favorita"
-              class="text-input"
-            >
-          </label>
-        </div>
-        
-        <div class="setting-group">
-          <label>
-            <span>🎤 Nome do Artista:</span>
-            <input 
-              type="text" 
-              v-model="songArtist" 
-              placeholder="Ex: João Silva"
-              class="text-input"
-            >
-          </label>
-        </div>
+        <h3> Configurações de Transcrição</h3>
         
         <div class="setting-group">
           <label>
@@ -443,22 +415,6 @@ function getProgressDetail() {
   border: 1px solid #e0e0e0;
   border-radius: 6px;
   background: white;
-}
-
-.text-input {
-  padding: 0.5rem 1rem;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  background: white;
-  font-size: 1rem;
-  width: 100%;
-  max-width: 300px;
-}
-
-.text-input:focus {
-  outline: none;
-  border-color: #4caf50;
-  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
 }
 
 .upload-actions {

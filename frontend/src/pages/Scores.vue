@@ -1,12 +1,30 @@
 <script setup>
-import { computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useTranscriptionStore } from '../stores/transcriptionStore.js'
+import { listScores, deleteScore } from '../services/api.js'
 
 const router = useRouter()
-const transcriptionStore = useTranscriptionStore()
+const scores = ref([])
+const loading = ref(true)
+const error = ref(null)
 
-const transcriptions = computed(() => transcriptionStore.transcriptions)
+const scoresSorted = computed(() => 
+  scores.value.sort((a, b) => b.id - a.id)
+)
+
+async function loadScores() {
+  try {
+    loading.value = true
+    error.value = null
+    scores.value = await listScores()
+    console.log('📚 Cifras carregadas:', scores.value.length)
+  } catch (err) {
+    console.error('❌ Erro ao carregar cifras:', err)
+    error.value = err.message
+  } finally {
+    loading.value = false
+  }
+}
 
 function goHome() {
   router.push('/')
@@ -16,9 +34,17 @@ function viewTranscription(id) {
   router.push(`/results/${id}`)
 }
 
-function deleteTranscription(id) {
-  if (confirm('Tem certeza que deseja deletar esta transcrição?')) {
-    transcriptionStore.deleteTranscription(id)
+async function deleteScoreItem(id) {
+  if (confirm('Tem certeza que deseja deletar esta cifra?')) {
+    try {
+      await deleteScore(id)
+      // Remover da lista local
+      scores.value = scores.value.filter(s => s.id !== id)
+      console.log('🗑️ Cifra deletada:', id)
+    } catch (err) {
+      console.error('❌ Erro ao deletar cifra:', err)
+      error.value = err.message
+    }
   }
 }
 
@@ -38,6 +64,10 @@ function formatDuration(duration) {
   const seconds = Math.floor(duration % 60)
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
+
+onMounted(() => {
+  loadScores()
+})
 </script>
 
 <template>
@@ -48,128 +78,84 @@ function formatDuration(duration) {
       <h1>📚 Minhas Cifras</h1>
     </header>
 
-    <!-- Main Content -->
-    <main class="scores-content">
-      <!-- Empty State -->
-      <div v-if="transcriptions.length === 0" class="empty-state">
-        <div class="empty-card">
-          <div class="empty-icon">🎼</div>
-          <h2>Nenhuma cifra encontrada</h2>
-          <p>Você ainda não tem transcrições salvas</p>
-          <div class="empty-actions">
-            <button @click="router.push('/upload')" class="action-btn primary">
-              📁 Fazer Upload
-            </button>
-            <button @click="router.push('/transcription')" class="action-btn secondary">
-              🔗 Usar URL
-            </button>
-          </div>
-        </div>
+    <!-- Loading State -->
+    <div v-if="loading" class="loading-state">
+      <div class="loading-card">
+        <div class="loading-icon">⏳</div>
+        <h2>Carregando cifras...</h2>
+        <p>Buscando suas transcrições salvas</p>
       </div>
+    </div>
 
-      <!-- Transcriptions List -->
-      <div v-else class="transcriptions-section">
-        <div class="section-header">
-          <h2>📋 Todas as Transcrições</h2>
-          <div class="stats">
-            <span class="stat">{{ transcriptions.length }} transcrições</span>
+    <!-- Error State -->
+    <div v-else-if="error" class="error-state">
+      <div class="error-card">
+        <div class="error-icon">❌</div>
+        <h2>Erro ao carregar</h2>
+        <p>{{ error }}</p>
+        <button @click="loadScores" class="retry-btn">🔄 Tentar novamente</button>
+      </div>
+    </div>
+
+    <!-- Scores List -->
+    <div v-else-if="scoresSorted.length > 0" class="scores-list">
+      <div 
+        v-for="score in scoresSorted" 
+        :key="score.id"
+        class="score-card"
+        @click="viewTranscription(score.id)"
+      >
+        <div class="score-header">
+          <h3>{{ score.title }}</h3>
+          <span class="score-id">#{{ score.id }}</span>
+        </div>
+        
+        <div class="score-info">
+          <div class="info-item">
+            <span class="info-label">Duração</span>
+            <span class="info-value">{{ formatDuration(score.duration) }}</span>
+          </div>
+          
+          <div class="info-item">
+            <span class="info-label">Idioma</span>
+            <span class="info-value">{{ score.language.toUpperCase() }}</span>
+          </div>
+          
+          <div class="info-item">
+            <span class="info-label">Palavras</span>
+            <span class="info-value">{{ score.words ? score.words.length : 0 }}</span>
           </div>
         </div>
-
-        <div class="transcriptions-grid">
-          <div 
-            v-for="transcription in transcriptions"
-            :key="transcription.id"
-            class="transcription-card"
-          >
-            <div class="card-header">
-              <h3>{{ transcription.title || 'Transcrição ' + transcription.id.slice(0, 8) }}</h3>
-              <div class="card-actions">
-                <button 
-                  @click="viewTranscription(transcription.id)"
-                  class="action-btn view"
-                  title="Ver detalhes"
-                >
-                  👁️
-                </button>
-                <button 
-                  @click="deleteTranscription(transcription.id)"
-                  class="action-btn delete"
-                  title="Deletar"
-                >
-                  🗑️
-                </button>
-              </div>
-            </div>
-
-            <div class="card-content">
-              <div class="metadata">
-                <div class="meta-item">
-                  <span class="meta-icon">📅</span>
-                  <span class="meta-text">{{ formatDate(transcription.createdAt) }}</span>
-                </div>
-                <div class="meta-item" v-if="transcription.duration">
-                  <span class="meta-icon">⏱️</span>
-                  <span class="meta-text">{{ formatDuration(transcription.duration) }}</span>
-                </div>
-                <div class="meta-item" v-if="transcription.tempo">
-                  <span class="meta-icon">🎵</span>
-                  <span class="meta-text">{{ transcription.tempo }} BPM</span>
-                </div>
-                <div class="meta-item" v-if="transcription.key">
-                  <span class="meta-icon">🎹</span>
-                  <span class="meta-text">{{ transcription.key }}</span>
-                </div>
-              </div>
-
-              <div class="preview" v-if="transcription.words && transcription.words.length > 0">
-                <h4>📝 Preview</h4>
-                <div class="notes-preview">
-                  <span 
-                    v-for="(word, index) in transcription.words.slice(0, 8)"
-                    :key="index"
-                    class="note-chip"
-                  >
-                    {{ word.note || '-' }}
-                  </span>
-                  <span v-if="transcription.words.length > 8" class="more-notes">
-                    +{{ transcription.words.length - 8 }}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div class="card-footer">
-              <button 
-                @click="viewTranscription(transcription.id)"
-                class="view-full-btn"
-              >
-                Ver Transcrição Completa
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Bulk Actions -->
-        <div class="bulk-actions">
+        
+        <div class="score-actions">
           <button 
-            @click="transcriptionStore.clearTranscriptions()"
-            class="bulk-btn danger"
-            v-if="transcriptions.length > 0"
+            @click.stop="viewTranscription(score.id)" 
+            class="view-btn"
           >
-            🗑️ Limpar Todas
+            👁️ Ver
           </button>
           
           <button 
-            @click="transcriptionStore.exportTranscriptions()"
-            class="bulk-btn secondary"
-            v-if="transcriptions.length > 0"
+            @click.stop="deleteScoreItem(score.id)" 
+            class="delete-btn"
           >
-            📥 Exportar Dados
+            🗑️ Deletar
           </button>
         </div>
       </div>
-    </main>
+    </div>
+
+    <!-- Empty State -->
+    <div v-else class="empty-state">
+      <div class="empty-card">
+        <div class="empty-icon">📚</div>
+        <h2>Nenhuma cifra encontrada</h2>
+        <p>Você ainda não tem transcrições salvas.</p>
+        <button @click="goHome" class="action-btn">
+          🎵 Criar Primeira Cifra
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -207,9 +193,166 @@ function formatDuration(duration) {
   margin: 0;
 }
 
-.scores-content {
+.loading-state,
+.error-state {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 60vh;
+}
+
+.loading-card,
+.error-card {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 3rem;
+  border-radius: 16px;
+  backdrop-filter: blur(10px);
+  text-align: center;
+  max-width: 400px;
+}
+
+.loading-icon,
+.error-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.loading-card h2,
+.error-card h2 {
+  margin-bottom: 1rem;
+  color: #333;
+}
+
+.loading-card p,
+.error-card p {
+  color: #666;
+  margin-bottom: 2rem;
+}
+
+.retry-btn {
+  padding: 1rem 2rem;
+  background: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.retry-btn:hover {
+  background: #1976d2;
+}
+
+.scores-list {
   max-width: 1200px;
   margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.score-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 16px;
+  padding: 1.5rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.score-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+}
+
+.score-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.score-header h3 {
+  margin: 0;
+  color: #333;
+  font-size: 1.2rem;
+  flex: 1;
+}
+
+.score-id {
+  background: #2196f3;
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.score-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.info-item {
+  text-align: center;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.info-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  margin-bottom: 0.25rem;
+}
+
+.info-value {
+  display: block;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.score-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.view-btn,
+.delete-btn {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.view-btn {
+  background: #4caf50;
+  color: white;
+}
+
+.view-btn:hover {
+  background: #45a049;
+}
+
+.delete-btn {
+  background: #f44336;
+  color: white;
+}
+
+.delete-btn:hover {
+  background: #d32f2f;
 }
 
 .empty-state {

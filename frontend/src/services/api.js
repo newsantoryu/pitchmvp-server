@@ -15,27 +15,28 @@ export async function health() {
 /**
  * Envia arquivo para transcrição (batch)
  */
-export async function transcribeFile(file, voiceGender = 'auto', language = 'pt', title = '', artist = '') {
+export async function transcribeFile(file, voiceGender = 'auto', language = 'en') {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('voice_gender', voiceGender)
   formData.append('language', language) // Adicionado: parâmetro de idioma
-  formData.append('title', title) // Adicionado: título da música
-  formData.append('artist', artist) // Adicionado: nome do artista
 
   const response = await fetch(`${API_BASE}/pitch/transcribe-file`, {
     method: 'POST',
     body: formData
   })
 
-  if (!response.ok) throw new Error('Erro ao enviar arquivo')
-  return response.json()
+  if (!response.ok) {
+    throw new Error(`Erro ao fazer upload: ${response.statusText}`)
+  }
+
+  return await response.json()
 }
 
 /**
  * Envia URL para transcrição
  */
-export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', language = 'pt', title = '', artist = '') {
+export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', language = 'en') {
   const response = await fetch(`${API_BASE}/pitch/transcribe`, {
     method: 'POST',
     headers: {
@@ -45,14 +46,15 @@ export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', lan
       audio_url: audioUrl,
       anon_key: anonKey,
       voice_gender: voiceGender,
-      language: language,
-      title: title, // Adicionado: título da música
-      artist: artist  // Adicionado: nome do artista
+      language: language
     })
   })
 
-  if (!response.ok) throw new Error('Erro ao enviar URL')
-  return response.json()
+  if (!response.ok) {
+    throw new Error(`Erro ao transcrever URL: ${response.statusText}`)
+  }
+
+  return await response.json()
 }
 
 /**
@@ -65,31 +67,40 @@ export async function getJobStatus(jobId) {
 }
 
 /**
- * Carrega lista de cifras salvas
- */
-export async function loadScores() {
-  const response = await fetch(`${API_BASE}/pitch/scores`)
-  if (!response.ok) throw new Error('Erro ao carregar cifras')
-  return response.json()
-}
-
-/**
- * Obtém uma cifra específica
+ * Obtém dados completos de um score
  */
 export async function getScore(scoreId) {
   const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}`)
-  if (!response.ok) throw new Error('Erro ao obter cifra')
+  if (!response.ok) throw new Error('Erro ao obter score')
   return response.json()
 }
 
 /**
- * Deleta uma cifra
+ * Lista todos os scores
+ */
+export async function listScores() {
+  const response = await fetch(`${API_BASE}/pitch/scores`)
+  if (!response.ok) throw new Error('Erro ao listar scores')
+  return response.json()
+}
+
+/**
+ * Deleta um score
  */
 export async function deleteScore(scoreId) {
   const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}`, {
     method: 'DELETE'
   })
-  if (!response.ok) throw new Error('Erro ao deletar cifra')
+  if (!response.ok) throw new Error('Erro ao deletar score')
+  return response.json()
+}
+
+/**
+ * Carrega lista de cifras salvas
+ */
+export async function loadScores() {
+  const response = await fetch(`${API_BASE}/pitch/scores`)
+  if (!response.ok) throw new Error('Erro ao carregar cifras')
   return response.json()
 }
 

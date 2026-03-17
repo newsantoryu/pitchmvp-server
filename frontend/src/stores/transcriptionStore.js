@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { ref, computed } from "vue"
-import { transcribeFile, transcribeUrl, getJobStatus } from "../services/api.js"
+import { transcribeFile, transcribeUrl, getJobStatus, getScore } from "../services/api.js"
 
 export const useTranscriptionStore = defineStore("transcription", () => {
   // Estado
@@ -23,15 +23,14 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       error.value = null
 
       console.log("📁 Enviando arquivo para transcrição:", file.name)
-      console.log("🎼 Título da música:", options.title || 'Não informado')
+      console.log("🌐 Idioma da transcrição:", options.language || 'en')
+      console.log("👤 Gênero vocal:", options.voiceGender || 'auto')
 
-      // Enviar arquivo com todos os parâmetros
+      // Enviar arquivo com parâmetros essenciais
       const response = await transcribeFile(
-        file,
-        options.voiceGender || "auto",
-        options.language || "en",
-        options.title || "",
-        options.artist || ""
+        file, 
+        options.voiceGender || "auto", 
+        options.language || "en"  
       )
       currentJob.value = response
 
@@ -43,7 +42,6 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     } catch (err) {
       console.error("❌ Erro na transcrição:", err)
       error.value = err.message
-      isProcessing.value = false
       throw err
     }
   }
@@ -56,12 +54,12 @@ export const useTranscriptionStore = defineStore("transcription", () => {
 
       console.log("🔗 Enviando URL para transcrição:", url)
 
-      // Enviar URL
+      // Enviar URL com parâmetros essenciais
       const response = await transcribeUrl(
         url,
         options.anonKey || "",
         options.voiceGender || "auto",
-        options.language || "en"  // Padrão alterado para inglês
+        options.language || "en"  
       )
       currentJob.value = response
 
@@ -73,7 +71,6 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     } catch (err) {
       console.error("❌ Erro na transcrição da URL:", err)
       error.value = err.message
-      isProcessing.value = false
       throw err
     }
   }
@@ -99,8 +96,38 @@ export const useTranscriptionStore = defineStore("transcription", () => {
         } else if (job.status === "done") {
           progress.value = 100
 
-          // Adicionar aos resultados
-          if (job.result) {
+          // Buscar dados completos do score
+          if (job.result && job.result.score_id) {
+            try {
+              console.log('📊 Buscando dados completos do score:', job.result.score_id)
+              const scoreData = await getScore(job.result.score_id)
+              
+              // Adicionar aos resultados com dados completos
+              addTranscription({
+                id: jobId,
+                scoreId: job.result.score_id,
+                title: scoreData.title,
+                duration: scoreData.duration,
+                language: scoreData.language,
+                words: scoreData.words,
+                range: job.result.range || calculateRange(scoreData.words),
+                key: extractKey(scoreData.words),
+                tempo: estimateTempo(scoreData.words),
+                createdAt: new Date().toISOString()
+              })
+              
+              console.log('✅ Transcrição salva com dados completos!')
+            } catch (err) {
+              console.error('❌ Erro ao buscar dados do score:', err)
+              // Fallback: usar dados básicos do job
+              addTranscription({
+                id: jobId,
+                ...job.result,
+                createdAt: new Date().toISOString()
+              })
+            }
+          } else {
+            // Fallback: sem score_id
             addTranscription({
               id: jobId,
               ...job.result,
@@ -159,10 +186,9 @@ export const useTranscriptionStore = defineStore("transcription", () => {
 
   function reset() {
     currentJob.value = null
-    isProcessing.value = false
     progress.value = 0
     error.value = null
-    clearTranscriptions()
+    isProcessing.value = false
   }
 
   function cancelCurrentJob() {
@@ -183,6 +209,76 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     }
   }
 
+  // Funções auxiliares para análise musical
+  function calculateRange(words) {
+    const notesWithPitch = words
+      .filter(w => w.note)
+      .map(w => w.note)
+    
+    if (notesWithPitch.length === 0) return null
+    
+    const noteNumbers = notesWithPitch.map(note => {
+      const noteName = note.replace(/[0-9]/g, '')
+      const octave = parseInt(note.match(/[0-9]/) || '4')
+      const noteMap = { 'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5, 'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11 }
+      return noteMap[noteName] + (octave * 12)
+    })
+    
+    const minNote = Math.min(...noteNumbers)
+    const maxNote = Math.max(...noteNumbers)
+    
+    return {
+      lowest: notesWithPitch[noteNumbers.indexOf(minNote)],
+      highest: notesWithPitch[noteNumbers.indexOf(maxNote)],
+      span: maxNote - minNote
+    }
+  }
+
+  function extractKey(words) {
+    const notesWithPitch = words
+      .filter(w => w.note)
+      .map(w => w.note.replace(/[0-9]/g, ''))
+    
+    if (notesWithPitch.length === 0) return null
+    
+    const noteCount = {}
+    notesWithPitch.forEach(note => {
+      noteCount[note] = (noteCount[note] || 0) + 1
+    })
+    
+    const sortedNotes = Object.entries(noteCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([note]) => note)
+    
+    // Simplificado: retornar a nota mais comum como tom
+    return sortedNotes[0] || null
+  }
+
+  function estimateTempo(words) {
+    if (words.length < 2) return null
+    
+    const durations = []
+    for (let i = 1; i < words.length; i++) {
+      const prevWord = words[i - 1]
+      const currWord = words[i]
+      
+      if (prevWord.end && currWord.start) {
+        const duration = currWord.start - prevWord.end
+        if (duration > 0 && duration < 2) { // Entre 0.5s e 2s por palavra
+          durations.push(duration)
+        }
+      }
+    }
+    
+    if (durations.length === 0) return null
+    
+    const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length
+    const estimatedBPM = Math.round(60 / avgDuration)
+    
+    return Math.max(60, Math.min(200, estimatedBPM)) // Limitar entre 60-200 BPM
+  }
+
   return {
     // Estado
     currentJob,
@@ -190,15 +286,16 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     isProcessing,
     progress,
     error,
-
+    
     // Getters
     hasActiveJob,
     jobStatus,
     latestTranscription,
-
+    
     // Actions
     transcribeAudioFile,
     transcribeAudioUrl,
+    pollJob,
     addTranscription,
     getTranscription,
     deleteTranscription,

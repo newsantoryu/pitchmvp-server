@@ -1,23 +1,62 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useTranscriptionStore } from '../stores/transcriptionStore.js'
+import { getScore } from '../services/api.js'
 
 const route = useRoute()
 const router = useRouter()
-const transcriptionStore = useTranscriptionStore()
 
 const transcriptionId = computed(() => route.params.id)
-const transcription = computed(() => {
-  return transcriptionStore.getTranscription(transcriptionId.value) || transcriptionStore.latestTranscription
-})
+const transcription = ref(null)
+const loading = ref(true)
+const error = ref(null)
+
+async function loadTranscription() {
+  try {
+    loading.value = true
+    error.value = null
+    
+    if (!transcriptionId.value) {
+      // Se não tiver ID, redirecionar para home
+      router.push('/')
+      return
+    }
+    
+    console.log('📊 Carregando detalhes da cifra:', transcriptionId.value)
+    const scoreData = await getScore(transcriptionId.value)
+    
+    // Formatar dados para exibição
+    transcription.value = {
+      id: scoreData.id,
+      title: scoreData.title,
+      duration: scoreData.duration,
+      language: scoreData.language,
+      words: scoreData.words,
+      createdAt: new Date().toISOString(), // Backend não tem createdAt, usar atual
+      key: extractKey(scoreData.words),
+      tempo: estimateTempo(scoreData.words),
+      range: calculateRange(scoreData.words)
+    }
+    
+    console.log('✅ Cifra carregada com sucesso!')
+  } catch (err) {
+    console.error('❌ Erro ao carregar cifra:', err)
+    error.value = err.message
+    // Se não encontrar, redirecionar para scores
+    if (err.message.includes('404') || err.message.includes('não encontrado')) {
+      router.push('/scores')
+    }
+  } finally {
+    loading.value = false
+  }
+}
 
 function goHome() {
   router.push('/')
 }
 
 function goBack() {
-  router.back()
+  router.push('/scores')
 }
 
 function exportResults() {
@@ -53,11 +92,78 @@ function formatDate(dateString) {
   })
 }
 
-onMounted(() => {
-  // Se não houver transcrição, redirecionar para home
-  if (!transcription.value) {
-    router.push('/')
+// Funções auxiliares para análise musical
+function calculateRange(words) {
+  const notesWithPitch = words
+    .filter(w => w.note)
+    .map(w => w.note)
+  
+  if (notesWithPitch.length === 0) return null
+  
+  const noteNumbers = notesWithPitch.map(note => {
+    const noteName = note.replace(/[0-9]/g, '')
+    const octave = parseInt(note.match(/[0-9]/) || '4')
+    const noteMap = { 'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5, 'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11 }
+    return noteMap[noteName] + (octave * 12)
+  })
+  
+  const minNote = Math.min(...noteNumbers)
+  const maxNote = Math.max(...noteNumbers)
+  
+  return {
+    lowest: notesWithPitch[noteNumbers.indexOf(minNote)],
+    highest: notesWithPitch[noteNumbers.indexOf(maxNote)],
+    span: maxNote - minNote
   }
+}
+
+function extractKey(words) {
+  const notesWithPitch = words
+    .filter(w => w.note)
+    .map(w => w.note.replace(/[0-9]/g, ''))
+  
+  if (notesWithPitch.length === 0) return null
+  
+  const noteCount = {}
+  notesWithPitch.forEach(note => {
+    noteCount[note] = (noteCount[note] || 0) + 1
+  })
+  
+  const sortedNotes = Object.entries(noteCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([note]) => note)
+  
+  // Simplificado: retornar a nota mais comum como tom
+  return sortedNotes[0] || null
+}
+
+function estimateTempo(words) {
+  if (words.length < 2) return null
+  
+  const durations = []
+  for (let i = 1; i < words.length; i++) {
+    const prevWord = words[i - 1]
+    const currWord = words[i]
+    
+    if (prevWord.end && currWord.start) {
+      const duration = currWord.start - prevWord.end
+      if (duration > 0 && duration < 2) { // Entre 0.5s e 2s por palavra
+        durations.push(duration)
+      }
+    }
+  }
+  
+  if (durations.length === 0) return null
+  
+  const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length
+  const estimatedBPM = Math.round(60 / avgDuration)
+  
+  return Math.max(60, Math.min(200, estimatedBPM)) // Limitar entre 60-200 BPM
+}
+
+onMounted(() => {
+  loadTranscription()
 })
 </script>
 
@@ -69,8 +175,27 @@ onMounted(() => {
       <h1>📊 Resultados</h1>
     </header>
 
+    <!-- Loading State -->
+    <div v-if="loading" class="loading-state">
+      <div class="loading-card">
+        <div class="loading-icon">⏳</div>
+        <h2>Carregando transcrição...</h2>
+        <p>Buscando dados da cifra</p>
+      </div>
+    </div>
+
+    <!-- Error State -->
+    <div v-else-if="error" class="error-state">
+      <div class="error-card">
+        <div class="error-icon">❌</div>
+        <h2>Erro ao carregar</h2>
+        <p>{{ error }}</p>
+        <button @click="goBack" class="retry-btn">← Voltar para Cifras</button>
+      </div>
+    </div>
+
     <!-- Main Content -->
-    <main class="results-content" v-if="transcription">
+    <main class="results-content" v-else-if="transcription">
       <!-- Summary -->
       <section class="summary-section">
         <div class="summary-card">
@@ -79,6 +204,10 @@ onMounted(() => {
             <div class="summary-item">
               <span class="item-label">ID</span>
               <span class="item-value">{{ transcription.id || 'N/A' }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="item-label">Título</span>
+              <span class="item-value">{{ transcription.title || 'Sem título' }}</span>
             </div>
             <div class="summary-item">
               <span class="item-label">Duração</span>
@@ -91,6 +220,10 @@ onMounted(() => {
             <div class="summary-item">
               <span class="item-label">Andamento</span>
               <span class="item-value">{{ transcription.tempo || 'N/A' }} BPM</span>
+            </div>
+            <div class="summary-item">
+              <span class="item-label">Idioma</span>
+              <span class="item-value">{{ transcription.language?.toUpperCase() || 'N/A' }}</span>
             </div>
             <div class="summary-item">
               <span class="item-label">Data</span>
@@ -134,7 +267,7 @@ onMounted(() => {
                 :key="index"
                 class="note-block"
                 :class="{ 'valid': word.note, 'invalid': !word.note }"
-                :title="`Tempo: ${formatTime(word.time || index * 0.1)} | Nota: ${word.note || 'N/A'}`"
+                :title="`Tempo: ${formatTime(word.start || index * 0.1)} | Nota: ${word.note || 'N/A'}`"
               >
                 {{ word.note || '-' }}
               </div>
@@ -253,6 +386,57 @@ export default {
 .page-header h1 {
   font-size: 2rem;
   margin: 0;
+}
+
+.loading-state,
+.error-state {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 60vh;
+}
+
+.loading-card,
+.error-card {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 3rem;
+  border-radius: 16px;
+  backdrop-filter: blur(10px);
+  text-align: center;
+  max-width: 400px;
+}
+
+.loading-icon,
+.error-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.loading-card h2,
+.error-card h2 {
+  margin-bottom: 1rem;
+  color: #333;
+}
+
+.loading-card p,
+.error-card p {
+  color: #666;
+  margin-bottom: 2rem;
+}
+
+.retry-btn {
+  padding: 1rem 2rem;
+  background: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.retry-btn:hover {
+  background: #1976d2;
 }
 
 .results-content {

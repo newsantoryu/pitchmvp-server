@@ -3,7 +3,7 @@ import { createRouter, createWebHistory } from "vue-router"
 // Pages (usando Home-simple que estava funcionando)
 import Home from "../pages/Home-simple.vue"
 import Upload from "../pages/Upload.vue"
-import Scores from "../pages/Scores-functional.vue"
+import Scores from "../pages/Scores.vue"
 import RealtimePitch from "../pages/RealtimePitch.vue"
 import RemotePitch from "../pages/RemotePitch.vue"
 import Transcription from "../pages/Transcription.vue"
