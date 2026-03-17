@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePitchStore } from '../stores/pitchStore.js'
 import { useMicrophone } from '../composables/useMicrophone.js'
+import { transcribeFrame } from '../services/api.js'
 
 const router = useRouter()
 const pitchStore = usePitchStore()
@@ -12,7 +13,6 @@ const remotePitch = ref(0)
 const remoteNote = ref('-')
 const remoteConfidence = ref(0)
 const errorMessage = ref('')
-const apiEndpoint = ref('http://localhost:8000/pitch-realtime/transcribe-frame-json') // URL correta com prefixo do router
 const connectionStatus = ref('Aguardando microfone...')
 const isSilent = ref(true)
 const volumeLevel = ref(0)
@@ -117,33 +117,23 @@ async function sendFrameToAPI() {
       samples[i] = (dataArray[i] - 128) / 128.0 // Normalizar para [-1, 1]
     }
 
-    // Enviar para API
-    const response = await fetch(apiEndpoint.value, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        samples: Array.from(samples),
-        sample_rate: audioContext ? audioContext.sampleRate : 44100
-      })
-    })
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
-    }
-
-    const result = await response.json()
-    
-    // Atualizar dados completos do pitch core
-    pitchData.value = {
-      frequency: result.frequency || 0,
-      note: result.note || '-',
-      cents: result.cents || 0,
-      confidence: result.confidence || 0,
-      periodicity: result.periodicity || 0,
-      voiced: result.voiced || false,
-      voice_analysis: result.voice_analysis || {},
+    // Enviar para API usando camada de API e estado mínimo
+    pitchStore.setLoading(true)
+    try {
+      const result = await transcribeFrame(
+        Array.from(samples), 
+        audioContext ? audioContext.sampleRate : 44100
+      )
+      
+      // Atualizar dados completos do pitch core
+      pitchData.value = {
+        frequency: result.frequency || 0,
+        note: result.note || '-',
+        cents: result.cents || 0,
+        confidence: result.confidence || 0,
+        periodicity: result.periodicity || 0,
+        voiced: result.voiced || false,
+        voice_analysis: result.voice_analysis || {},
       sample_rate: result.sample_rate || 44100,
       hop_length: result.hop_length || 0,
       frame_time: result.frame_time || 0.01,
@@ -166,6 +156,16 @@ async function sendFrameToAPI() {
       confidence: result.confidence || 0,
       voice_type: result.voice_analysis?.voice_type || 'unknown'
     })
+    
+    // Sucesso - atualizar estado do pitchStore
+    pitchStore.setResult(result)
+    
+    } catch (error) {
+      console.error('❌ Erro ao processar áudio:', error)
+      errorMessage.value = error.message || 'Erro ao processar áudio'
+      connectionStatus.value = 'Erro na conexão'
+      pitchStore.setError(error.message || 'Erro ao processar áudio')
+    }
     
     // Manter apenas os últimos N pontos
     if (pitchHistory.value.length > maxHistoryLength) {
@@ -375,7 +375,7 @@ onUnmounted(() => {
           <h2>📡 Status da Conexão</h2>
           <div class="status-info">
             <div class="endpoint-info">
-              <strong>Endpoint:</strong> POST {{ apiEndpoint }}
+              <strong>Endpoint:</strong> POST /api/v1/pitch-realtime/transcribe-frame-json
             </div>
             <div class="status-message">
               {{ connectionStatus }}

@@ -6,6 +6,7 @@ import logging
 from app.database import Base, engine
 from app.routes_pitch import router as pitch_router
 from app.routes_pitch_realtime import router as realtime_router
+from app.api_v1 import api_v1_router
 
 # Cria tabelas
 Base.metadata.create_all(bind=engine)
@@ -22,12 +23,15 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Routers
+# Routers - API v1 primeiro (novas rotas)
+app.include_router(api_v1_router)
+
+# Routers existentes (backward compatibility)
 app.include_router(pitch_router, prefix="/pitch")
 app.include_router(realtime_router, prefix="/pitch-realtime")
 
 # Frontend
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
 
 logger.info("PitchMVP API inicializada com sucesso!")
 

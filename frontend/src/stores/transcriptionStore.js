@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { ref, computed } from "vue"
-import { transcribeFile, transcribeUrl, getJobStatus, getScore } from "../services/api.js"
+import { sendAudio, getTranscription, checkJobStatus } from "../services/pitchService.js"
 
 export const useTranscriptionStore = defineStore("transcription", () => {
   // Estado
@@ -22,26 +22,26 @@ export const useTranscriptionStore = defineStore("transcription", () => {
       progress.value = 0
       error.value = null
 
-      console.log("📁 Enviando arquivo para transcrição:", file.name)
-      console.log("🌐 Idioma da transcrição:", options.language || 'en')
-      console.log("👤 Gênero vocal:", options.voiceGender || 'auto')
+      console.log(" Enviando arquivo para transcrição:", file.name)
+      console.log(" Idioma da transcrição:", options.language || 'en')
+      console.log(" Gênero vocal:", options.voiceGender || 'auto')
 
-      // Enviar arquivo com parâmetros essenciais
-      const response = await transcribeFile(
-        file, 
-        options.voiceGender || "auto", 
-        options.language || "en"  
-      )
+      // Enviar arquivo com timeout de 40 minutos (transcribeFile já tem timeout)
+      const response = await sendAudio(file, {
+        voiceGender: options.voiceGender || "auto",
+        language: options.language || "en"
+      })
       currentJob.value = response
 
-      // Polling do job
+      // Polling do job (com timeout de 40 minutos no polling)
       await pollJob(response.job_id)
 
       return response
 
     } catch (err) {
-      console.error("❌ Erro na transcrição:", err)
+      console.error(" Erro na transcrição:", err)
       error.value = err.message
+      isProcessing.value = false
       throw err
     }
   }
@@ -59,7 +59,7 @@ export const useTranscriptionStore = defineStore("transcription", () => {
         url,
         options.anonKey || "",
         options.voiceGender || "auto",
-        options.language || "en"  
+        options.language || "en"
       )
       currentJob.value = response
 
@@ -76,15 +76,15 @@ export const useTranscriptionStore = defineStore("transcription", () => {
   }
 
   async function pollJob(jobId) {
-    const maxAttempts = 1800 // 30 minutos (aumentado para suportar processamentos longos)
+    // Sem limite de tentativas - polling infinito até completar
     let attempts = 0
 
-    while (attempts < maxAttempts) {
+    while (true) { // Loop infinito
       try {
-        const job = await getJobStatus(jobId)
+        const job = await checkJobStatus(jobId)
         currentJob.value = job
 
-        console.log('🔄 Status do job:', job.status, 'Progress:', job.progress)
+        console.log(' Status do job:', job.status, 'Progress:', job.progress)
 
         // Atualizar progresso baseado no status do backend
         if (job.status === "queued") {
@@ -99,9 +99,9 @@ export const useTranscriptionStore = defineStore("transcription", () => {
           // Buscar dados completos do score
           if (job.result && job.result.score_id) {
             try {
-              console.log('📊 Buscando dados completos do score:', job.result.score_id)
+              console.log(' Buscando dados completos do score:', job.result.score_id)
               const scoreData = await getScore(job.result.score_id)
-              
+
               // Adicionar aos resultados com dados completos
               addTranscription({
                 id: jobId,
@@ -115,10 +115,10 @@ export const useTranscriptionStore = defineStore("transcription", () => {
                 tempo: estimateTempo(scoreData.words),
                 createdAt: new Date().toISOString()
               })
-              
-              console.log('✅ Transcrição salva com dados completos!')
+
+              console.log(' Transcrição salva com dados completos!')
             } catch (err) {
-              console.error('❌ Erro ao buscar dados do score:', err)
+              console.error(' Erro ao buscar dados do score:', err)
               // Fallback: usar dados básicos do job
               addTranscription({
                 id: jobId,
@@ -136,7 +136,7 @@ export const useTranscriptionStore = defineStore("transcription", () => {
           }
 
           isProcessing.value = false
-          console.log('✅ Job concluído com sucesso!')
+          console.log(' Job concluído com sucesso!')
           return job
         } else if (job.status === "error") {
           throw new Error(job.error || "Erro no processamento")
@@ -146,14 +146,21 @@ export const useTranscriptionStore = defineStore("transcription", () => {
         await new Promise(resolve => setTimeout(resolve, 1000))
 
       } catch (err) {
-        console.error("❌ Erro no polling:", err)
+        console.error(" Erro no polling:", err)
+
+        // Se for erro de rede que pode ser retentado, continua
+        if (err.isRetryable || err.message.includes('conexão') || err.message.includes('network')) {
+          console.warn(' Erro de rede, tentando novamente em 2 segundos...')
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          continue
+        }
+
+        // Erros reais interrompem o processamento
         error.value = err.message
         isProcessing.value = false
         throw err
       }
     }
-
-    throw new Error("Timeout ao processar transcrição")
   }
 
   function addTranscription(transcription) {
@@ -214,19 +221,19 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     const notesWithPitch = words
       .filter(w => w.note)
       .map(w => w.note)
-    
+
     if (notesWithPitch.length === 0) return null
-    
+
     const noteNumbers = notesWithPitch.map(note => {
       const noteName = note.replace(/[0-9]/g, '')
       const octave = parseInt(note.match(/[0-9]/) || '4')
       const noteMap = { 'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5, 'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11 }
       return noteMap[noteName] + (octave * 12)
     })
-    
+
     const minNote = Math.min(...noteNumbers)
     const maxNote = Math.max(...noteNumbers)
-    
+
     return {
       lowest: notesWithPitch[noteNumbers.indexOf(minNote)],
       highest: notesWithPitch[noteNumbers.indexOf(maxNote)],
@@ -238,31 +245,31 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     const notesWithPitch = words
       .filter(w => w.note)
       .map(w => w.note.replace(/[0-9]/g, ''))
-    
+
     if (notesWithPitch.length === 0) return null
-    
+
     const noteCount = {}
     notesWithPitch.forEach(note => {
       noteCount[note] = (noteCount[note] || 0) + 1
     })
-    
+
     const sortedNotes = Object.entries(noteCount)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .map(([note]) => note)
-    
+
     // Simplificado: retornar a nota mais comum como tom
     return sortedNotes[0] || null
   }
 
   function estimateTempo(words) {
     if (words.length < 2) return null
-    
+
     const durations = []
     for (let i = 1; i < words.length; i++) {
       const prevWord = words[i - 1]
       const currWord = words[i]
-      
+
       if (prevWord.end && currWord.start) {
         const duration = currWord.start - prevWord.end
         if (duration > 0 && duration < 2) { // Entre 0.5s e 2s por palavra
@@ -270,12 +277,12 @@ export const useTranscriptionStore = defineStore("transcription", () => {
         }
       }
     }
-    
+
     if (durations.length === 0) return null
-    
+
     const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length
     const estimatedBPM = Math.round(60 / avgDuration)
-    
+
     return Math.max(60, Math.min(200, estimatedBPM)) // Limitar entre 60-200 BPM
   }
 
@@ -286,12 +293,12 @@ export const useTranscriptionStore = defineStore("transcription", () => {
     isProcessing,
     progress,
     error,
-    
+
     // Getters
     hasActiveJob,
     jobStatus,
     latestTranscription,
-    
+
     // Actions
     transcribeAudioFile,
     transcribeAudioUrl,

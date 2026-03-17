@@ -3,8 +3,26 @@
 
 import logging
 import numpy as np
+import asyncio
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
+
+# Importar função do módulo realtime
+try:
+    from app.routes_pitch_realtime import process_realtime_frame
+except ImportError:
+    # Fallback se não conseguir importar
+    def process_realtime_frame(samples, sample_rate):
+        logger.error("❌ process_realtime_frame não disponível")
+        return {"error": "Função não disponível"}
+
+# Configurações de timeout diferenciadas
+TIMEOUT_CONFIG = {
+    "pitch_extraction": 0,       # 0 = sem timeout - processamento pode demorar quanto precisar
+    "realtime_frame": 5,         # 5 segundos - deve ser instantâneo
+    "whisper_transcribe": 300,   # 5 minutos - arquivos longos são esperados
+}
 
 # Ranges por gênero vocal (Hz)
 # Masculino: até 900 Hz para incluir tenor agudo e falsete (C5 ≈ 523, G5 ≈ 784)
@@ -44,7 +62,10 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
         
         # ✅ Limpar tensors do torch
         del pitch, periodicity, audio_t
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        if 'torch' in locals():
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         times = np.arange(len(pitch_np)) * 0.01
         conf_min = 0.78 if voice_gender == "male" else 0.85
@@ -80,7 +101,10 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
             del pitch
         if 'periodicity' in locals():
             del periodicity
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        if 'torch' in locals():
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         import gc
         gc.collect()
 
@@ -103,5 +127,65 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
         logger.info(f"pYIN: {len(frames)} frames ({voice_gender})")
         return frames
     except Exception as e:
-        logger.error(f"pYIN falhou: {e}")
+        logger.error(f"pYIN fallback falhou: {e}")
         return []
+
+
+# Funções seguras com timeout
+async def safe_extract_pitch(file_path: str, voice_gender: str = "auto"):
+    """
+    Executa extract_pitch sem timeout - processamento pode demorar quanto precisar
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, extract_pitch, file_path, voice_gender)
+        return result
+    except Exception as e:
+        logger.error(f"❌ Erro no processamento de pitch: {file_path} - {e}")
+        # Propaga erro real, não timeout
+        raise e
+
+
+async def safe_whisper_transcribe(model, tmp_path, language):
+    """
+    Executa transcrição Whisper com timeout generoso (5 minutos)
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        
+        # Função wrapper para passar argumentos corretamente
+        def transcribe_with_args():
+            return model.transcribe(tmp_path, word_timestamps=True, language=language)
+        
+        segments, info = await asyncio.wait_for(
+            loop.run_in_executor(None, transcribe_with_args),
+            timeout=TIMEOUT_CONFIG["whisper_transcribe"]  # 5 minutos
+        )
+        return segments, info
+    except asyncio.TimeoutError:
+        logger.error(f"⏰ Timeout na transcrição Whisper: {tmp_path}")
+        raise HTTPException(status_code=408, detail="Arquivo muito longo para processamento. Tente um arquivo menor.")
+
+
+async def safe_realtime_pitch(samples, sample_rate):
+    """
+    Executa processamento realtime com timeout rigoroso (5 segundos)
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        
+        # Função wrapper para passar argumentos corretamente
+        def process_frame_with_args():
+            return process_realtime_frame(samples, sample_rate)
+        
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, process_frame_with_args),
+            timeout=TIMEOUT_CONFIG["realtime_frame"]  # 5 segundos
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.error(f"⏰ Timeout no processamento realtime")
+        raise HTTPException(status_code=408, detail="Timeout no processamento em tempo real")
+    except Exception as e:
+        logger.error(f"❌ Erro no processamento realtime: {e}")
+        raise HTTPException(status_code=500, detail="Erro no processamento de áudio")

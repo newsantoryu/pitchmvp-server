@@ -22,6 +22,11 @@ export const usePitchStore = defineStore("pitch", () => {
     sessionDuration: 0
   })
 
+  // Estado mínimo para operações assíncronas
+  const result = ref(null)
+  const loading = ref(false)
+  const error = ref(null)
+
   // Getters computados
   const currentNoteWithOctave = computed(() => {
     if (!note.value) return "-"
@@ -145,6 +150,33 @@ export const usePitchStore = defineStore("pitch", () => {
     isDetecting.value = false
     isRecording.value = false
     clearHistory()
+    clearState() // Limpar estado mínimo também
+  }
+
+  // Actions para gerenciar estado mínimo
+  function setLoading(isLoading) {
+    loading.value = isLoading
+    if (isLoading) {
+      error.value = null
+    }
+  }
+
+  function setError(errorMessage) {
+    error.value = errorMessage
+    loading.value = false
+    result.value = null
+  }
+
+  function setResult(data) {
+    result.value = data
+    loading.value = false
+    error.value = null
+  }
+
+  function clearState() {
+    result.value = null
+    loading.value = false
+    error.value = null
   }
 
   // Funções individuais para compatibilidade
@@ -188,6 +220,11 @@ export const usePitchStore = defineStore("pitch", () => {
     pitchHistory,
     stats,
 
+    // Estado mínimo para operações assíncronas
+    result,
+    loading,
+    error,
+
     // Getters
     currentNoteWithOctave,
     frequencyFormatted,
@@ -207,6 +244,12 @@ export const usePitchStore = defineStore("pitch", () => {
     setCents,
     setConfidence,
     setDetecting,
-    exportHistory
+    exportHistory,
+
+    // Actions para estado mínimo
+    setLoading,
+    setError,
+    setResult,
+    clearState
   }
 })

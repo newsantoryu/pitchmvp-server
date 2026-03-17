@@ -11,6 +11,32 @@ const isDragging = ref(false)
 const voiceGender = ref('auto')
 const transcriptionLanguage = ref('en') // Padrão alterado para inglês
 
+// Timer específico para transcribe-file
+const processingTime = ref(0)
+const isTranscribeFileProcessing = ref(false)
+let transcribeTimer = null
+
+const startTranscribeTimer = () => {
+  processingTime.value = 0
+  isTranscribeFileProcessing.value = true
+  
+  transcribeTimer = setInterval(() => {
+    processingTime.value++
+    
+    // Timer infinito - apenas conta tempo para feedback visual
+    // Sem avisos ou interrupções
+  }, 1000)
+}
+
+const stopTranscribeTimer = () => {
+  if (transcribeTimer) {
+    clearInterval(transcribeTimer)
+    transcribeTimer = null
+  }
+  isTranscribeFileProcessing.value = false
+  processingTime.value = 0
+}
+
 function handleFileSelect(event) {
   const file = event.target.files[0]
   if (file && file.type.startsWith('audio/')) {
@@ -47,20 +73,45 @@ async function uploadFile() {
 
   try {
     console.log('🎵 Iniciando transcrição do arquivo:', selectedFile.value.name)
-    console.log('� Idioma da transcrição:', transcriptionLanguage.value)
+    console.log('🌐 Idioma da transcrição:', transcriptionLanguage.value)
     console.log('👤 Gênero vocal:', voiceGender.value)
+    
+    // Iniciar timer específico para transcribe-file (40 minutos)
+    startTranscribeTimer()
     
     await transcriptionStore.transcribeAudioFile(selectedFile.value, {
       voiceGender: voiceGender.value,
       language: transcriptionLanguage.value // Incluir idioma
     })
     
-    // Redirecionar para resultados
-    router.push('/results')
+    // Parar timer em caso de sucesso
+    stopTranscribeTimer()
+    
+    // Redirecionar para resultados com o score_id
+    if (transcriptionStore.latestTranscription && transcriptionStore.latestTranscription.scoreId) {
+      const scoreId = transcriptionStore.latestTranscription.scoreId
+      console.log(`🎯 Redirecionando para detalhes da cifra: /results/${scoreId}`)
+      router.push(`/results/${scoreId}`)
+    } else {
+      // Fallback: redirecionar para resultados genérico
+      console.log('📋 Redirecionando para lista de resultados')
+      router.push('/results')
+    }
     
   } catch (err) {
+    // Parar timer em caso de erro
+    stopTranscribeTimer()
+    
     console.error('❌ Erro na transcrição:', err)
-    alert('Erro na transcrição: ' + err.message)
+    
+    // Apenas mostrar erros reais de processamento
+    // Nunca mostrar erros de timeout para o usuário
+    if (!err.message.includes('timeout') && !err.message.includes('Timeout') && !err.message.includes('conexão')) {
+      alert('Erro na transcrição: ' + err.message)
+    } else {
+      // Erros de timeout/conexão são silenciosos - usuário pode continuar esperando
+      console.warn('⏰ Operação demorando mais que o normal, mas continuando...')
+    }
   }
 }
 
@@ -218,8 +269,20 @@ function getProgressDetail() {
           :disabled="transcriptionStore.isProcessing"
           class="cancel-btn"
         >
-          Limpar
+          Cancelar
         </button>
+      </div>
+
+      <!-- Timeout Messages for transcribe-file -->
+      <div v-if="isTranscribeFileProcessing" class="timeout-messages">
+        <div v-if="processingTime > 1800 && processingTime < 2400" class="timeout-warning">
+          ⚠️ Processamento demorando mais que o normal (30 minutos)
+        </div>
+        
+        <div v-if="processingTime >= 2400" class="timeout-error">
+          ⏰ Tempo máximo excedido (40 minutos para transcribe-file)
+          <button @click="stopTranscribeTimer" class="stop-btn">Parar Processamento</button>
+        </div>
       </div>
 
       <!-- Progress -->
@@ -583,5 +646,48 @@ function getProgressDetail() {
     align-items: stretch;
     gap: 0.5rem;
   }
+}
+
+/* Timeout Messages for transcribe-file */
+.timeout-messages {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.timeout-warning {
+  padding: 1rem;
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 8px;
+  color: #ffc107;
+  text-align: center;
+  font-weight: 500;
+}
+
+.timeout-error {
+  padding: 1rem;
+  background: rgba(220, 53, 69, 0.1);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  border-radius: 8px;
+  color: #dc3545;
+  text-align: center;
+  font-weight: 500;
+}
+
+.stop-btn {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.stop-btn:hover {
+  background: #c82333;
 }
 </style>

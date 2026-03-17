@@ -2,19 +2,21 @@
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
-import tempfile, os, uuid, logging
+import tempfile, os, uuid, logging, asyncio
 import torch
 import torchcrepe
 import numpy as np
 from app.database import SessionLocal
 from app.models import Score
 from app.music_utils import detect_range
+from app.pitch_engine import safe_realtime_pitch
+from app.memory_manager import jobs  # Importar jobs do memory_manager para consistência
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Jobs globais
-jobs = {}
+# Semáforo para limitar concorrência no processamento realtime
+REALTIME_SEMAPHORE = asyncio.Semaphore(4)  # Máximo 4 processamentos simultâneos
 
 # -------------------------------
 # Models
@@ -39,80 +41,23 @@ def freq_to_note(freq: float):
 @router.post("/transcribe-frame-json")
 @router.options("/transcribe-frame-json")
 async def realtime_frame(data: FrameData = None):
-    logger.info(f"🎯 Request recebido: {data}")
-    logger.info(f"🔍 Método: {data is not None}")
-    
-    if data is None:
-        # Para requisições OPTIONS
-        logger.info("📡 OPTIONS request recebido")
-        return {"status": "ok"}
-    
-    if not data.samples:
-        logger.error("❌ Nenhum sample enviado")
-        raise HTTPException(status_code=400, detail="Nenhum sample enviado")
-    
-    logger.info(f"📊 Processando {len(data.samples)} samples")
-    
-    # Torch precisa de batch dimension
-    samples = torch.tensor(data.samples, dtype=torch.float32).unsqueeze(0)
-
-    with torch.no_grad():
-        # torchcrepe.predict com periodicity para dados completos
-        pitch, periodicity = torchcrepe.predict(
-            audio=samples,
-            sample_rate=data.sample_rate,
-            fmin=50.0,
-            fmax=2000.0,
-            model="full",
-            hop_length=int(0.01 * data.sample_rate),  # 10ms por frame
-            device="cpu",
-            return_periodicity=True  # ✅ Obter confidence/periodicity
-        )
-
-    # Pega o primeiro frame do batch
-    freq = float(pitch[0, 0].item())
-    confidence = float(periodicity[0, 0].item())
-    
-    # Análise musical completa
-    note_result = freq_to_note(freq)
-    
-    # Análise de voz e range
-    voice_analysis = analyze_voice_characteristics(freq, confidence)
-    
-    # Dados completos do pitch core
-    result = {
-        # Dados básicos
-        "frequency": freq,
-        "note": note_result["note"] if note_result else "-",
-        "cents": note_result.get("cents", 0),
+    async with REALTIME_SEMAPHORE:
+        logger.info(f"� Iniciando realtime frame - Slots disponíveis: {REALTIME_SEMAPHORE._value}")
         
-        # Dados de confiança e qualidade
-        "confidence": confidence,
-        "periodicity": confidence,
-        "voiced": confidence > 0.5,
+        if data is None:
+            # Para requisições OPTIONS
+            logger.info("📡 OPTIONS request recebido")
+            return {"status": "ok"}
         
-        # Análise de voz
-        "voice_analysis": voice_analysis,
+        if not data.samples:
+            logger.error("❌ Nenhum sample enviado")
+            raise HTTPException(status_code=400, detail="Nenhum sample enviado")
         
-        # Informações de processamento
-        "sample_rate": data.sample_rate,
-        "hop_length": int(0.01 * data.sample_rate),
-        "frame_time": 0.01,  # 10ms por frame
+        # Processamento com timeout rigoroso (5 segundos)
+        result = await safe_realtime_pitch(data.samples, data.sample_rate)
         
-        # Metadados
-        "timestamp": str(torch.cuda.Event().record() if torch.cuda.is_available() else "cpu"),
-        "processing_mode": "torchcrepe_full",
-        
-        # Range analysis
-        "range_info": {
-            "current_range": voice_analysis.get("range", "unknown"),
-            "optimal_range": voice_analysis.get("optimal_range", "auto"),
-            "is_in_range": voice_analysis.get("is_in_range", True)
-        }
-    }
-    
-    logger.info(f"🎵 Resultado completo: {result}")
-    return result
+        logger.info(f"✅ Realtime frame processado com sucesso")
+        return result
 
 def analyze_voice_characteristics(freq: float, confidence: float) -> dict:
     """Análise completa das características vocais"""
@@ -293,6 +238,69 @@ def get_job(job_id: str):
     if job["status"] == "done":
         return jobs.pop(job_id)
     return job
+
+
+def process_realtime_frame(samples, sample_rate):
+    """
+    Processa frame realtime sem timeout (função pura para ser usada com safe_realtime_pitch)
+    """
+    logger.info(f"📊 Processando {len(samples)} samples")
+    
+    # Torch precisa de batch dimension
+    samples_tensor = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+
+    with torch.no_grad():
+        # torchcrepe.predict com periodicity para dados completos
+        pitch, periodicity = torchcrepe.predict(
+            audio=samples_tensor,
+            sample_rate=sample_rate,
+            fmin=50.0,
+            fmax=2000.0,
+            model="full",
+            hop_length=int(0.01 * sample_rate),  # 10ms por frame
+            device="cpu",
+            return_periodicity=True  # ✅ Obter confidence/periodicity
+        )
+
+    # Pega o primeiro frame do batch
+    freq = float(pitch[0, 0].item())
+    confidence = float(periodicity[0, 0].item())
+    
+    # Análise musical completa
+    note_result = freq_to_note(freq)
+    
+    # Análise de voz e range
+    voice_analysis = analyze_voice_characteristics(freq, confidence)
+    
+    # Dados completos do pitch core
+    result = {
+        # Dados básicos
+        "frequency": freq,
+        "note": note_result["note"] if note_result else "-",
+        "cents": note_result.get("cents", 0),
+        
+        # Dados de confiança e qualidade
+        "confidence": confidence,
+        "periodicity": confidence,
+        "voiced": confidence > 0.3,  # Threshold melhorado
+        
+        # Análise de voz
+        "voice_analysis": voice_analysis,
+        
+        # Metadados do processamento
+        "sample_rate": sample_rate,
+        "hop_length": int(0.01 * sample_rate),
+        "frame_time": 0.01,
+        "processing_mode": "realtime",
+        "range_info": {
+            "fmin": 50.0,
+            "fmax": 2000.0,
+            "model": "full"
+        }
+    }
+    
+    logger.info(f"✅ Frame processado: {result['note']} ({result['frequency']:.2f}Hz)")
+    return result
 
 @router.get("/health")
 def health():

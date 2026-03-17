@@ -1,98 +1,175 @@
-// Serviço de API - Comunicação com backend Python
-// Migrado dos endpoints: app/routes_pitch_realtime.js
+// Serviço de API - Comunicação com backend Python usando Axios
+// API v1 - Versão organizada
 
-const API_BASE = "http://localhost:8000"
+import axios from "axios";
+
+// Configuração base da API
+const api = axios.create({
+  baseURL: "http://localhost:8000/api/v1",
+  timeout: 30000, // 30 segundos (reduzido para não bloquear demais)
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Interceptor para logging de requisições
+api.interceptors.request.use(
+  (config) => {
+    const timeoutMs = config.timeout || 30000; // Default global
+    console.log(`🔍 DEBUG: ${config.method?.toUpperCase()} ${config.url}`);
+    console.log(`🔍 DEBUG: Timeout configurado: ${timeoutMs}ms (${timeoutMs / 1000}s)`);
+    console.log(`🔍 DEBUG: Headers:`, config.headers);
+    console.log(`🔍 DEBUG: Timestamp: ${new Date().toISOString()}`);
+
+    // Cache busting para job status
+    if (config.url?.includes('/job/')) {
+      config.params = {
+        ...config.params,
+        _cb: Date.now() // Força cache busting
+      };
+    }
+
+    return config;
+  },
+  (error) => {
+    console.error('🔍 Request Error:', error);
+    return Promise.reject(error);
+  }
+);
+
+// Interceptor para tratamento de erros
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    console.error('API Error:', error);
+
+    // Preservar timeouts específicos já tratados
+    if (error.code === 'ECONNABORTED') {
+      if (error.isUploadTimeout) {
+        throw error; // Mantém mensagem específica de upload
+      }
+      if (error.isPollingTimeout) {
+        throw error; // Mantém mensagem específica de polling
+      }
+      // Só usa mensagem genérica se não for específico
+      throw new Error('Timeout de conexão');
+    }
+
+    if (error.response?.status === 413) {
+      throw new Error('Arquivo muito grande (máximo 100MB)');
+    }
+    if (error.response?.status === 404) {
+      throw new Error('Recurso não encontrado');
+    }
+    if (error.response?.status >= 500) {
+      throw new Error('Erro interno do servidor');
+    }
+    throw error;
+  }
+);
 
 /**
  * Verifica saúde do servidor
  */
 export async function health() {
-  const response = await fetch(`${API_BASE}/health`)
-  if (!response.ok) throw new Error('Erro ao verificar saúde do servidor')
-  return response.json()
+  const response = await api.get('/pitch/health')
+  return response.data
 }
 
 /**
- * Envia arquivo para transcrição (batch)
+ * Envia arquivo para transcrição (batch) - Timeout específico de 40 minutos
  */
 export async function transcribeFile(file, voiceGender = 'auto', language = 'en') {
+  console.log(`📤 Iniciando upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+
   const formData = new FormData()
   formData.append('file', file)
   formData.append('voice_gender', voiceGender)
-  formData.append('language', language) // Adicionado: parâmetro de idioma
+  formData.append('language', language)
 
-  const response = await fetch(`${API_BASE}/pitch/transcribe-file`, {
-    method: 'POST',
-    body: formData
-  })
-
-  if (!response.ok) {
-    throw new Error(`Erro ao fazer upload: ${response.statusText}`)
+  try {
+    const response = await api.post('/pitch/transcribe-file', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 2400000, // 40 minutos em milissegundos (apenas esta rota)
+    })
+    console.log(`✅ Upload concluído: ${file.name}`);
+    return response.data
+  } catch (error) {
+    if (error.code === 'ECONNABORTED') {
+      console.error(`⏰ Timeout no upload após 40min: ${file.name}`);
+      const timeoutError = new Error('Timeout no upload (40 minutos máximo para transcribe-file)');
+      timeoutError.code = 'ECONNABORTED';
+      timeoutError.isUploadTimeout = true;
+      throw timeoutError;
+    }
+    console.error(`❌ Erro no upload: ${file.name}`, error);
+    throw error
   }
-
-  return await response.json()
 }
 
 /**
  * Envia URL para transcrição
  */
 export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', language = 'en') {
-  const response = await fetch(`${API_BASE}/pitch/transcribe`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      audio_url: audioUrl,
-      anon_key: anonKey,
-      voice_gender: voiceGender,
-      language: language
-    })
+  const response = await api.post('/pitch/transcribe', {
+    audio_url: audioUrl,
+    anon_key: anonKey,
+    voice_gender: voiceGender,
+    language: language
   })
-
-  if (!response.ok) {
-    throw new Error(`Erro ao transcrever URL: ${response.statusText}`)
-  }
-
-  return await response.json()
+  return response.data
 }
 
 /**
- * Obtém status de um job
+ * Obtém status de um job - Timeout específico de 300 segundos (5 minutos) para polling
  */
 export async function getJobStatus(jobId) {
-  const response = await fetch(`${API_BASE}/pitch/job/${jobId}`)
-  if (!response.ok) throw new Error('Erro ao obter status do job')
-  return response.json()
-}
+  console.log(`🔍 getJobStatus chamado para jobId: ${jobId}`);
 
-/**
- * Obtém dados completos de um score
- */
-export async function getScore(scoreId) {
-  const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}`)
-  if (!response.ok) throw new Error('Erro ao obter score')
-  return response.json()
+  try {
+    // Sem timeout - deixar o backend responder quando precisar
+    const response = await api.get(`/pitch/job/${jobId}`, {
+      timeout: 0, // Sem timeout - espera indefinidamente
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    });
+
+    console.log(`🔍 getJobStatus response:`, response.data);
+    return response.data;
+
+  } catch (error) {
+    console.error(`🔍 getJobStatus error message:`, error.message);
+
+    // Tratar erros de rede, mas não timeout
+    if (error.code === 'ECONNABORTED') {
+      console.error(`⏰ Conexão interrompida no job ${jobId} - tentando novamente...`);
+      const retryError = new Error('Conexão interrompida, tentando novamente...');
+      retryError.code = 'ECONNABORTED';
+      retryError.isRetryable = true;
+      throw retryError;
+    }
+    throw error
+  }
 }
 
 /**
  * Lista todos os scores
  */
 export async function listScores() {
-  const response = await fetch(`${API_BASE}/pitch/scores`)
-  if (!response.ok) throw new Error('Erro ao listar scores')
-  return response.json()
+  const response = await api.get('/pitch/scores')
+  return response.data
 }
 
 /**
- * Deleta um score
+ * Obtém um score específico
  */
-export async function deleteScore(scoreId) {
-  const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}`, {
-    method: 'DELETE'
-  })
-  if (!response.ok) throw new Error('Erro ao deletar score')
-  return response.json()
+export async function getScore(scoreId) {
+  const response = await api.get(`/pitch/scores/${scoreId}`)
+  return response.data
 }
 
 /**
@@ -102,50 +179,43 @@ export async function updateScore(scoreId, title) {
   const formData = new FormData()
   formData.append('title', title)
 
-  const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}`, {
-    method: 'PUT',
-    body: formData
+  const response = await api.put(`/pitch/scores/${scoreId}`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
   })
-  if (!response.ok) throw new Error('Erro ao atualizar score')
-  return response.json()
+  return response.data
 }
 
 /**
- * Carrega lista de cifras salvas
+ * Deleta um score
  */
-export async function loadScores() {
-  const response = await fetch(`${API_BASE}/pitch/scores`)
-  if (!response.ok) throw new Error('Erro ao carregar cifras')
-  return response.json()
+export async function deleteScore(scoreId) {
+  const response = await api.delete(`/pitch/scores/${scoreId}`)
+  return response.data
 }
 
 /**
- * Exporta cifra em PDF
+ * Exporta score em formato JSON
  */
-export async function exportPDF(scoreId) {
-  const response = await fetch(`${API_BASE}/pitch/scores/${scoreId}/pdf`)
-  if (!response.ok) throw new Error('Erro ao exportar PDF')
-  return response.blob()
+export async function exportScore(scoreId) {
+  const response = await api.get(`/pitch/scores/${scoreId}`, {
+    headers: {
+      'Accept': 'application/json',
+    },
+  })
+  return response.data
 }
 
 /**
  * Envia frame de áudio para detecção em tempo real
- * Migrado de: app/routes_pitch_realtime.js
  */
 export async function transcribeFrame(samples, sampleRate = 44100) {
-  const response = await fetch(`${API_BASE}/pitch/transcribe-frame-json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      samples: samples,
-      sample_rate: sampleRate
-    })
+  const response = await api.post('/pitch-realtime/transcribe-frame-json', {
+    samples: samples,
+    sample_rate: sampleRate
   })
-
-  if (!response.ok) throw new Error('Erro ao processar frame')
-  return response.json()
+  return response.data
 }
 
 /**
@@ -155,159 +225,22 @@ export async function transcribeRealtimeFile(file, voiceGender = 'auto', languag
   const formData = new FormData()
   formData.append('file', file)
   formData.append('voice_gender', voiceGender)
-  formData.append('language', language) // Adicionado: parâmetro de idioma
+  formData.append('language', language)
 
-  const response = await fetch(`${API_BASE}/pitch/transcribe-file`, {
-    method: 'POST',
-    body: formData
+  const response = await api.post('/pitch-realtime/transcribe-file', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
   })
-
-  if (!response.ok) throw new Error('Erro ao enviar arquivo')
-  return response.json()
+  return response.data
 }
 
 /**
  * Verifica saúde do serviço de realtime
  */
 export async function realtimeHealth() {
-  const response = await fetch(`${API_BASE}/pitch/health`)
-  if (!response.ok) throw new Error('Erro ao verificar saúde do realtime')
-  return response.json()
+  const response = await api.get('/pitch-realtime/health')
+  return response.data
 }
 
-/**
- * Obtém métricas do sistema
- */
-export async function getMetrics() {
-  const response = await fetch(`${API_BASE}/pitch/metrics`)
-  if (!response.ok) throw new Error('Erro ao obter métricas')
-  return response.json()
-}
-
-/**
- * Envia feedback sobre transcrição
- */
-export async function sendFeedback(jobId, feedback) {
-  const response = await fetch(`${API_BASE}/pitch/job/${jobId}/feedback`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(feedback)
-  })
-
-  if (!response.ok) throw new Error('Erro ao enviar feedback')
-  return response.json()
-}
-
-/**
- * Obtém estatísticas do usuário
- */
-export async function getUserStats() {
-  const response = await fetch(`${API_BASE}/pitch/stats`)
-  if (!response.ok) throw new Error('Erro ao obter estatísticas')
-  return response.json()
-}
-
-/**
- * Classe para gerenciar polling de jobs
- */
-export class JobPoller {
-  constructor(jobId, onUpdate, onComplete, onError) {
-    this.jobId = jobId
-    this.onUpdate = onUpdate
-    this.onComplete = onComplete
-    this.onError = onError
-    this.pollInterval = null
-    this.maxAttempts = 120 // 2 minutos com polling a cada 1s
-    this.attempts = 0
-  }
-
-  async start() {
-    this.attempts = 0
-    this.poll()
-  }
-
-  async poll() {
-    if (this.attempts >= this.maxAttempts) {
-      this.onError(new Error('Timeout ao processar job'))
-      this.stop()
-      return
-    }
-
-    try {
-      const job = await getJobStatus(this.jobId)
-      this.attempts++
-
-      if (this.onUpdate) {
-        this.onUpdate(job)
-      }
-
-      if (job.status === 'done') {
-        this.onComplete(job)
-        this.stop()
-      } else if (job.status === 'error') {
-        this.onError(new Error(job.error || 'Erro no processamento'))
-        this.stop()
-      } else {
-        // Continua polling
-        this.pollInterval = setTimeout(() => this.poll(), 1000)
-      }
-
-    } catch (error) {
-      this.onError(error)
-      this.stop()
-    }
-  }
-
-  stop() {
-    if (this.pollInterval) {
-      clearTimeout(this.pollInterval)
-      this.pollInterval = null
-    }
-  }
-}
-
-/**
- * Utilitário para criar upload de arquivo com progresso
- */
-export function createFileUpload(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData()
-    formData.append('file', file)
-
-    const xhr = new XMLHttpRequest()
-
-    // Progress
-    if (onProgress) {
-      xhr.upload.addEventListener('progress', (event) => {
-        if (event.lengthComputable) {
-          const progress = (event.loaded / event.total) * 100
-          onProgress(progress)
-        }
-      })
-    }
-
-    // Completion
-    xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const response = JSON.parse(xhr.responseText)
-          resolve(response)
-        } catch (error) {
-          reject(error)
-        }
-      } else {
-        reject(new Error(`HTTP ${xhr.status}: ${xhr.statusText}`))
-      }
-    })
-
-    // Error
-    xhr.addEventListener('error', () => {
-      reject(new Error('Erro de rede'))
-    })
-
-    xhr.open('POST', `${API_BASE}/pitch/transcribe-file`)
-    xhr.send(formData)
-  })
-}
+export default api;

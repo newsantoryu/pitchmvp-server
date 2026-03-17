@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { listScores, deleteScore, updateScore } from '../services/api.js'
+import { getAllTranscriptions, deleteTranscription, updateTranscriptionTitle } from '../services/pitchService.js'
 
 const router = useRouter()
 const scores = ref([])
@@ -18,7 +18,7 @@ async function loadScores() {
   try {
     loading.value = true
     error.value = null
-    scores.value = await listScores()
+    scores.value = await getAllTranscriptions()
     console.log('📚 Cifras carregadas:', scores.value.length)
   } catch (err) {
     console.error('❌ Erro ao carregar cifras:', err)
@@ -39,7 +39,7 @@ function viewTranscription(id) {
 async function deleteScoreItem(id) {
   if (confirm('Tem certeza que deseja deletar esta cifra?')) {
     try {
-      await deleteScore(id)
+      await deleteTranscription(id)
       // Remover da lista local
       scores.value = scores.value.filter(s => s.id !== id)
       console.log('🗑️ Cifra deletada:', id)
@@ -67,7 +67,7 @@ function startEditing(score) {
 async function saveEdit(id) {
   try {
     console.log('💾 Atualizando título da cifra:', id, editingTitle.value)
-    const updatedScore = await updateScore(id, editingTitle.value)
+    const updatedScore = await updateTranscriptionTitle(id, editingTitle.value)
     
     // Atualizar na lista local
     const scoreIndex = scores.value.findIndex(s => s.id === id)

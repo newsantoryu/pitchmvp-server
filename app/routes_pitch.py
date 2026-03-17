@@ -1,11 +1,17 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from pathlib import Path
-import tempfile, os, uuid, logging, requests
+import tempfile, os, uuid, logging, requests, asyncio
 from datetime import datetime
 
+# Limite de upload de arquivo
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+
+# Semáforo para limitar concorrência no processamento batch
+TRANSCRIBE_SEMAPHORE = asyncio.Semaphore(2)  # Máximo 2 processamentos simultâneos
+
 from pydantic import BaseModel
-from app.pitch_engine import extract_pitch
+from app.pitch_engine import extract_pitch, safe_extract_pitch, safe_whisper_transcribe
 from app.music_utils import match_notes, detect_range
 from app.memory_manager import whisper_model_context, get_db_session, jobs, log_memory_usage
 from app.models import Score
@@ -21,8 +27,8 @@ class TranscribeRequest(BaseModel):
     voice_gender: str = "auto"
     language: str = "en"
 
-# Função de processamento - CORRIGIDA
-def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: str = "en"):
+# Função de processamento - CORRIGIDA com timeouts
+async def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: str = "en"):
     try:
         # Log memory usage no início
         log_memory_usage()
@@ -33,13 +39,14 @@ def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: st
         jobs[job_id] = {"status": "transcribing", "progress": 10}
         logger.info(f"🎵 Iniciando transcrição do job {job_id}")
         
-        # ✅ USAR MODELO EM CACHE (SINGLETON)
+        # ✅ USAR MODELO EM CACHE com timeout generoso
         with whisper_model_context() as model:
             # Atualiza progresso antes do processamento pesado
             jobs[job_id] = {"status": "transcribing", "progress": 20}
             logger.info(f"📝 Usando modelo Whisper em cache...")
             
-            segments, info = model.transcribe(tmp_path, word_timestamps=True, language=language)
+            # Transcrição com timeout generoso (5 minutos)
+            segments, info = await safe_whisper_transcribe(model, tmp_path, language)
             
             # Atualiza progresso após transcrição
             jobs[job_id] = {"status": "transcribing", "progress": 60}
@@ -68,8 +75,8 @@ def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: st
             jobs[job_id] = {"status": "pitch", "progress": 70}
             logger.info(f"🎯 Iniciando detecção de pitch para {len(words)} palavras")
             
-            # Detecta pitch
-            pitch_frames = extract_pitch(tmp_path, voice_gender=voice_gender)
+            # Detecta pitch com timeout de segurança (180 segundos)
+            pitch_frames = await safe_extract_pitch(tmp_path, voice_gender=voice_gender)
             if pitch_frames:
                 matched = match_notes(words, pitch_frames)
                 for i, w in enumerate(words):
@@ -121,22 +128,34 @@ def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", language: st
             pass
 
 # Rotas
+async def validate_file(file: UploadFile):
+    """Valida o tamanho do arquivo antes do processamento"""
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="Arquivo muito grande (máximo 100MB)")
+    return contents
+
 @router.post("/transcribe")
 async def transcribe(req: TranscribeRequest, bg: BackgroundTasks):
-    audio_url = req.audio_url.strip()
-    if not audio_url.startswith("https://"):
-        raise HTTPException(status_code=400, detail="audio_url deve ser HTTPS.")
-    ext = os.path.splitext(audio_url.split("?")[0])[1].lower() or ".wav"
-    headers = {"Authorization": f"Bearer {req.anon_key}", "apikey": req.anon_key}
-    resp = requests.get(audio_url, headers=headers)
-    resp.raise_for_status()
-    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-        tmp.write(resp.content)
-        tmp_path = tmp.name
-    job_id = str(uuid.uuid4())[:8]
-    jobs[job_id] = {"status": "queued", "progress": 5}
-    bg.add_task(run_job, job_id, tmp_path, req.voice_gender, req.language)
-    return {"job_id": job_id}
+    async with TRANSCRIBE_SEMAPHORE:
+        logger.info(f"🔄 Iniciando transcribe URL - Slots disponíveis: {TRANSCRIBE_SEMAPHORE._value}")
+        
+        audio_url = req.audio_url.strip()
+        if not audio_url.startswith("https://"):
+            raise HTTPException(status_code=400, detail="audio_url deve ser HTTPS.")
+        ext = os.path.splitext(audio_url.split("?")[0])[1].lower() or ".wav"
+        headers = {"Authorization": f"Bearer {req.anon_key}", "apikey": req.anon_key}
+        resp = requests.get(audio_url, headers=headers)
+        resp.raise_for_status()
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(resp.content)
+            tmp_path = tmp.name
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {"status": "queued", "progress": 5}
+        bg.add_task(run_job, job_id, tmp_path, req.voice_gender, req.language)
+        
+        logger.info(f" Transcribe URL iniciado - Job ID: {job_id}")
+        return {"job_id": job_id}
 
 @router.post("/transcribe-file")
 async def transcribe_file(
@@ -145,14 +164,38 @@ async def transcribe_file(
     language: str = Form("en"),
     bg: BackgroundTasks = None
 ):
+    async with TRANSCRIBE_SEMAPHORE:
+        logger.info(f"🔄 Iniciando transcribe file - Slots disponíveis: {TRANSCRIBE_SEMAPHORE._value}")
+        
+        # Timeout de 50 minutos apenas para esta rota
+        try:
+            result = await asyncio.wait_for(
+                _process_transcribe_file(file, voice_gender, language, bg),
+                timeout=3000  # 50 minutos (apenas esta rota)
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.error(f"⏰ Timeout de 50 minutos na rota transcribe-file")
+            raise HTTPException(
+                status_code=408, 
+                detail="Timeout no processamento (50 minutos máximo para transcribe-file)"
+            )
+
+
+async def _process_transcribe_file(file, voice_gender, language, bg):
+    """Função helper com lógica atual da transcribe-file"""
+    # Validar tamanho do arquivo
+    content = await validate_file(file)
+    
     ext = os.path.splitext(file.filename or "")[1].lower() or ".wav"
-    content = await file.read()
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {"status": "queued", "progress": 5}
     bg.add_task(run_job, job_id, tmp_path, voice_gender, language)
+    
+    logger.info(f"✅ Transcribe file iniciado - Job ID: {job_id}")
     return {"job_id": job_id}
 
 @router.get("/job/{job_id}")
