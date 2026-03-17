@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile, os, uuid, logging
 import torch
 import torchcrepe
+import numpy as np
 from app.database import SessionLocal
 from app.models import Score
 from app.music_utils import detect_range
@@ -36,28 +37,202 @@ def freq_to_note(freq: float):
     return {"note": NOTE_NAMES[note_index], "freq": freq, "cents": cents}
 
 @router.post("/transcribe-frame-json")
-async def realtime_frame(data: FrameData):
+@router.options("/transcribe-frame-json")
+async def realtime_frame(data: FrameData = None):
+    logger.info(f"🎯 Request recebido: {data}")
+    logger.info(f"🔍 Método: {data is not None}")
+    
+    if data is None:
+        # Para requisições OPTIONS
+        logger.info("📡 OPTIONS request recebido")
+        return {"status": "ok"}
+    
     if not data.samples:
+        logger.error("❌ Nenhum sample enviado")
         raise HTTPException(status_code=400, detail="Nenhum sample enviado")
+    
+    logger.info(f"📊 Processando {len(data.samples)} samples")
     
     # Torch precisa de batch dimension
     samples = torch.tensor(data.samples, dtype=torch.float32).unsqueeze(0)
 
     with torch.no_grad():
-        # torchcrepe.predict atual retorna apenas pitch
-        pitch = torchcrepe.predict(
+        # torchcrepe.predict com periodicity para dados completos
+        pitch, periodicity = torchcrepe.predict(
             audio=samples,
             sample_rate=data.sample_rate,
             fmin=50.0,
             fmax=2000.0,
             model="full",
             hop_length=int(0.01 * data.sample_rate),  # 10ms por frame
-            device="cpu"  # ou "cuda" se tiver GPU
+            device="cpu",
+            return_periodicity=True  # ✅ Obter confidence/periodicity
         )
 
     # Pega o primeiro frame do batch
     freq = float(pitch[0, 0].item())
-    return freq_to_note(freq)
+    confidence = float(periodicity[0, 0].item())
+    
+    # Análise musical completa
+    note_result = freq_to_note(freq)
+    
+    # Análise de voz e range
+    voice_analysis = analyze_voice_characteristics(freq, confidence)
+    
+    # Dados completos do pitch core
+    result = {
+        # Dados básicos
+        "frequency": freq,
+        "note": note_result["note"] if note_result else "-",
+        "cents": note_result.get("cents", 0),
+        
+        # Dados de confiança e qualidade
+        "confidence": confidence,
+        "periodicity": confidence,
+        "voiced": confidence > 0.5,
+        
+        # Análise de voz
+        "voice_analysis": voice_analysis,
+        
+        # Informações de processamento
+        "sample_rate": data.sample_rate,
+        "hop_length": int(0.01 * data.sample_rate),
+        "frame_time": 0.01,  # 10ms por frame
+        
+        # Metadados
+        "timestamp": str(torch.cuda.Event().record() if torch.cuda.is_available() else "cpu"),
+        "processing_mode": "torchcrepe_full",
+        
+        # Range analysis
+        "range_info": {
+            "current_range": voice_analysis.get("range", "unknown"),
+            "optimal_range": voice_analysis.get("optimal_range", "auto"),
+            "is_in_range": voice_analysis.get("is_in_range", True)
+        }
+    }
+    
+    logger.info(f"🎵 Resultado completo: {result}")
+    return result
+
+def analyze_voice_characteristics(freq: float, confidence: float) -> dict:
+    """Análise completa das características vocais"""
+    
+    # Classificação de range vocal
+    if freq <= 0:
+        range_type = "silence"
+    elif freq < 130:
+        range_type = "bass"
+    elif freq < 260:
+        range_type = "tenor"
+    elif freq < 350:
+        range_type = "alto"
+    elif freq < 525:
+        range_type = "soprano"
+    else:
+        range_type = "high"
+    
+    # Qualidade da detecção
+    if confidence > 0.9:
+        quality = "excellent"
+    elif confidence > 0.8:
+        quality = "good"
+    elif confidence > 0.6:
+        quality = "fair"
+    else:
+        quality = "poor"
+    
+    # Análise de estabilidade
+    stability = "stable" if confidence > 0.7 else "unstable"
+    
+    # Informação de oitava
+    if freq > 0:
+        midi = 69 + 12 * np.log2(freq / 440)
+        octave = int(midi // 12) - 1
+        midi_note = int(round(midi))
+    else:
+        octave = 0
+        midi_note = 0
+    
+    return {
+        "range": range_type,
+        "quality": quality,
+        "stability": stability,
+        "octave": octave,
+        "midi_note": midi_note,
+        "optimal_range": "auto",  # Pode ser configurado
+        "is_in_range": 50 <= freq <= 900,  # Range típico
+        "voice_type": detect_voice_type(freq, confidence),
+        "harmonics": analyze_harmonics(freq),
+        "formants": estimate_formants(freq)
+    }
+
+def detect_voice_type(freq: float, confidence: float) -> str:
+    """Detecção básica de tipo de voz"""
+    if confidence < 0.5:
+        return "unvoiced"
+    
+    if freq < 150:
+        return "male_bass"
+    elif freq < 300:
+        return "male_tenor"
+    elif freq < 400:
+        return "female_alto"
+    elif freq < 600:
+        return "female_soprano"
+    else:
+        return "high_pitch"
+
+def analyze_harmonics(freq: float) -> dict:
+    """Análise básica de harmônicos"""
+    if freq <= 0:
+        return {"fundamental": 0, "harmonics": []}
+    
+    harmonics = []
+    for i in range(1, 5):  # Primeiros 4 harmônicos
+        harmonic_freq = freq * i
+        if harmonic_freq <= 2000:  # Limite audível
+            harmonics.append({
+                "order": i,
+                "frequency": harmonic_freq,
+                "amplitude": 1.0 / i  # Simplificado
+            })
+    
+    return {
+        "fundamental": freq,
+        "harmonics": harmonics,
+        "harmonic_count": len(harmonics)
+    }
+
+def estimate_formants(freq: float) -> dict:
+    """Estimativa básica de formantes"""
+    if freq <= 0:
+        return {"f1": 0, "f2": 0, "f3": 0}
+    
+    # Estimativa simplificada baseada na frequência fundamental
+    f1 = min(freq * 1.2, 800)   # Primeiro formante
+    f2 = min(freq * 2.5, 2500)  # Segundo formante  
+    f3 = min(freq * 3.5, 3500)  # Terceiro formante
+    
+    return {
+        "f1": f1,
+        "f2": f2,
+        "f3": f3,
+        "vowel_estimate": estimate_vowel(f1, f2)
+    }
+
+def estimate_vowel(f1: float, f2: float) -> str:
+    """Estimativa básica de vogal baseada em formantes"""
+    # Simplificado - baseado em padrões típicos
+    if f1 < 300 and f2 < 1000:
+        return "i"  # /i/
+    elif f1 < 400 and f2 < 1500:
+        return "e"  # /e/
+    elif f1 < 600 and f2 < 2000:
+        return "a"  # /a/
+    elif f1 < 400 and f2 > 2000:
+        return "u"  # /u/
+    else:
+        return "o"  # /o/
 
 def run_realtime_job(job_id: str, tmp_path: str, voice_gender: str = "auto"):
     """

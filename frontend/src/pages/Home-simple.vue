@@ -48,6 +48,18 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- Remote Pitch -->
+        <div class="feature-card">
+          <div class="feature-icon">🌐</div>
+          <h3 class="feature-title">Pitch Remoto</h3>
+          <p class="feature-description">
+            Conecte-se a um servidor remoto para detecção de pitch
+          </p>
+          <div class="feature-actions">
+            <a href="/remote-pitch" class="action-link">Conectar →</a>
+          </div>
+        </div>
+
         <!-- Transcription -->
         <div class="feature-card">
           <div class="feature-icon">🎼</div>

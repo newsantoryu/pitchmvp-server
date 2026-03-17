@@ -5,6 +5,7 @@ import Home from "../pages/Home-simple.vue"
 import Upload from "../pages/Upload.vue"
 import Scores from "../pages/Scores-functional.vue"
 import RealtimePitch from "../pages/RealtimePitch.vue"
+import RemotePitch from "../pages/RemotePitch.vue"
 import Transcription from "../pages/Transcription.vue"
 import Results from "../pages/Results.vue"
 
@@ -33,6 +34,14 @@ const router = createRouter({
       component: RealtimePitch,
       meta: {
         title: "Pitch em Tempo Real"
+      }
+    },
+    {
+      path: "/remote-pitch",
+      name: "RemotePitch",
+      component: RemotePitch,
+      meta: {
+        title: "Pitch Remoto"
       }
     },
     {
