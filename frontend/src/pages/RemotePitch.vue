@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { usePitchStore } from '../stores/pitchStore.js'
 import { useMicrophone } from '../composables/useMicrophone.js'
 import { transcribeFrame } from '../services/api.js'
+import { retryWithConfig } from '../utils/retry.js'
 
 const router = useRouter()
 const pitchStore = usePitchStore()
@@ -39,6 +40,10 @@ let audioContext = null
 let analyser = null
 let microphoneStream = null
 let silenceTimeout = null
+
+// Estado de loading para feedback visual
+const isStarting = ref(false)
+const isStopping = ref(false)
 
 // Gráfico em tempo real
 const canvasRef = ref(null)
@@ -120,10 +125,12 @@ async function sendFrameToAPI() {
     // Enviar para API usando camada de API e estado mínimo
     pitchStore.setLoading(true)
     try {
-      const result = await transcribeFrame(
-        Array.from(samples), 
-        audioContext ? audioContext.sampleRate : 44100
-      )
+      const result = await retryWithConfig(async () => {
+        return await transcribeFrame(
+          Array.from(samples), 
+          audioContext ? audioContext.sampleRate : 44100
+        )
+      }, 'NETWORK')
       
       // Atualizar dados completos do pitch core
       pitchData.value = {
@@ -277,21 +284,20 @@ function updateChart() {
 
 async function startRealtimeAnalysis() {
   try {
+    isStarting.value = true
+    errorMessage.value = ''
+    
     // Inicializar contexto de áudio
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)()
     }
-
-    // Iniciar microfone
-    const streamResult = await start()
     
-    // Obter stream do microfone
-    microphoneStream = stream.value
-    if (!microphoneStream) {
-      throw new Error('Não foi possível obter stream do microfone')
-    }
+    // Iniciar microfone com retry
+    microphoneStream = await retryWithConfig(async () => {
+      return await start()
+    }, 'MICROPHONE')
     
-    // Configurar analisador
+    // Configurar analyser
     const source = audioContext.createMediaStreamSource(microphoneStream)
     analyser = audioContext.createAnalyser()
     analyser.fftSize = 2048
@@ -312,33 +318,47 @@ async function startRealtimeAnalysis() {
     console.error('❌ Erro ao iniciar análise:', error)
     errorMessage.value = 'Erro ao iniciar análise: ' + error.message
     connectionStatus.value = 'Erro ao iniciar'
+  } finally {
+    isStarting.value = false
   }
 }
 
 function stopRealtimeAnalysis() {
-  if (analysisInterval) {
-    clearInterval(analysisInterval)
-    analysisInterval = null
+  try {
+    isStopping.value = true
+    
+    if (analysisInterval) {
+      clearInterval(analysisInterval)
+      analysisInterval = null
+    }
+    
+    if (silenceTimeout) {
+      clearTimeout(silenceTimeout)
+      silenceTimeout = null
+    }
+    
+    if (microphoneStream) {
+      stop()
+      microphoneStream = null
+    }
+    
+    if (audioContext) {
+      audioContext.close()
+      audioContext = null
+    }
+    
+    isReceiving.value = false
+    connectionStatus.value = 'Análise parada'
+    pitchData.value = null
+    remotePitch.value = 0
+    remoteNote.value = '-'
+    remoteConfidence.value = 0
+    
+  } catch (error) {
+    console.error('❌ Erro ao parar análise:', error)
+  } finally {
+    isStopping.value = false
   }
-  
-  if (silenceTimeout) {
-    clearTimeout(silenceTimeout)
-    silenceTimeout = null
-  }
-  
-  stop()
-  isReceiving.value = false
-  connectionStatus.value = 'Parado'
-  isSilent.value = true
-  volumeLevel.value = 0
-  pitchStore.setDetecting(false)
-  
-  if (audioContext) {
-    audioContext.close()
-    audioContext = null
-  }
-  analyser = null
-  microphoneStream = null
 }
 
 function goHome() {
@@ -391,17 +411,17 @@ onUnmounted(() => {
           <div class="control-buttons">
             <button 
               @click="startRealtimeAnalysis" 
-              :disabled="isReceiving"
+              :disabled="isReceiving || isStarting"
               class="btn btn-success btn-large"
             >
-              🎤 Iniciar Análise
+              {{ isStarting ? 'Iniciando...' : '🎤 Iniciar Análise' }}
             </button>
             <button 
               @click="stopRealtimeAnalysis" 
-              :disabled="!isReceiving"
+              :disabled="!isReceiving || isStopping"
               class="btn btn-danger btn-large"
             >
-              🛑 Parar Análise
+              {{ isStopping ? 'Parando...' : '🛑 Parar Análise' }}
             </button>
           </div>
           

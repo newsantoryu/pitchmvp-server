@@ -1,4 +1,5 @@
 import { ref } from "vue"
+import { retryWithConfig } from "../utils/retry.js"
 
 /**
  * Hook para gerenciamento de microfone e stream de áudio
@@ -19,7 +20,7 @@ export function useMicrophone() {
    */
   async function start(constraints = {}) {
     try {
-      // Solicita permissão do microfone
+      // Solicita permissão do microfone com retry
       const audioConstraints = {
         echoCancellation: true,
         noiseSuppression: true,
@@ -28,9 +29,11 @@ export function useMicrophone() {
         ...constraints
       }
 
-      stream.value = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints
-      })
+      stream.value = await retryWithConfig(async () => {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints
+        })
+      }, 'MICROPHONE')
 
       // Inicia Web Audio API se não estiver ativo
       if (!audioContext.value) {

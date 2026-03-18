@@ -1,7 +1,8 @@
 // Serviço de API - Comunicação com backend Python usando Axios
 // API v1 - Versão organizada
 
-import axios from "axios";
+import axios from 'axios'
+import { retryWithConfig } from '../utils/retry.js'
 
 // Configuração base da API
 const api = axios.create({
@@ -128,32 +129,34 @@ export async function transcribeUrl(audioUrl, anonKey, voiceGender = 'auto', lan
 export async function getJobStatus(jobId) {
   console.log(`🔍 getJobStatus chamado para jobId: ${jobId}`);
 
-  try {
-    // Sem timeout - deixar o backend responder quando precisar
-    const response = await api.get(`/pitch/job/${jobId}`, {
-      timeout: 0, // Sem timeout - espera indefinidamente
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
+  return await retryWithConfig(async () => {
+    try {
+      // Sem timeout - deixar o backend responder quando precisar
+      const response = await api.get(`/pitch/job/${jobId}`, {
+        timeout: 0, // Sem timeout - espera indefinidamente
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      });
+
+      console.log(`🔍 getJobStatus response:`, response.data);
+      return response.data;
+
+    } catch (error) {
+      console.error(`🔍 getJobStatus error message:`, error.message);
+
+      // Tratar erros de rede, mas não timeout
+      if (error.code === 'ECONNABORTED') {
+        console.error(`⏰ Conexão interrompida no job ${jobId} - tentando novamente...`);
+        const retryError = new Error('Conexão interrompida, tentando novamente...');
+        retryError.code = 'ECONNABORTED';
+        retryError.isRetryable = true;
+        throw retryError;
       }
-    });
-
-    console.log(`🔍 getJobStatus response:`, response.data);
-    return response.data;
-
-  } catch (error) {
-    console.error(`🔍 getJobStatus error message:`, error.message);
-
-    // Tratar erros de rede, mas não timeout
-    if (error.code === 'ECONNABORTED') {
-      console.error(`⏰ Conexão interrompida no job ${jobId} - tentando novamente...`);
-      const retryError = new Error('Conexão interrompida, tentando novamente...');
-      retryError.code = 'ECONNABORTED';
-      retryError.isRetryable = true;
-      throw retryError;
+      throw error
     }
-    throw error
-  }
+  }, 'API')
 }
 
 /**
@@ -168,8 +171,10 @@ export async function listScores() {
  * Obtém um score específico
  */
 export async function getScore(scoreId) {
-  const response = await api.get(`/pitch/scores/${scoreId}`)
-  return response.data
+  return await retryWithConfig(async () => {
+    const response = await api.get(`/pitch/scores/${scoreId}`)
+    return response.data
+  }, 'API')
 }
 
 /**

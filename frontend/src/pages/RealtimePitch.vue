@@ -1,9 +1,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { usePitchStore } from '../stores/pitchStore.js'
 import { useMicrophone } from '../composables/useMicrophone.js'
 import { usePitch } from '../composables/usePitchDetection.js'
+import { usePitchStore } from '../stores/pitchStore.js'
+import { retryWithConfig } from '../utils/retry.js'
 
 const router = useRouter()
 const pitchStore = usePitchStore()
@@ -13,10 +14,14 @@ const { currentPitch, currentNote, isDetecting, init, startDetection, stopDetect
 
 const isInitialized = ref(false)
 const errorMessage = ref('')
+const isProcessing = ref(false)
 const voiceGender = ref('auto')
 const currentFrequency = ref('0.00 Hz')
 const currentConfidence = ref(0)
-const isProcessing = ref(false)
+
+// Estado de loading para feedback visual
+const isStartingDetection = ref(false)
+const isStoppingDetection = ref(false)
 
 // Gráfico
 const canvasRef = ref(null)
@@ -34,8 +39,11 @@ async function initializePitchDetection() {
     
     console.log('🔄 Inicializando detecção de pitch local...')
     
-    // Inicializar Web Audio API
-    const initialized = await init()
+    // Inicializar Web Audio API com retry
+    const initialized = await retryWithConfig(async () => {
+      return await init()
+    }, 'INITIALIZATION')
+    
     if (initialized) {
       isInitialized.value = true
       console.log('✅ Web Audio API inicializado com sucesso')
@@ -54,6 +62,7 @@ async function initializePitchDetection() {
 
 async function startRealtimeDetection() {
   try {
+    isStartingDetection.value = true
     errorMessage.value = ''
     
     if (!isInitialized.value) {
@@ -65,8 +74,10 @@ async function startRealtimeDetection() {
     
     console.log('🎤 Iniciando microfone...')
     
-    // Iniciar microfone
-    const stream = await start()
+    // Iniciar microfone com retry
+    const stream = await retryWithConfig(async () => {
+      return await start()
+    }, 'MICROPHONE')
     if (!stream) {
       throw new Error('Não foi possível acessar o microfone')
     }
@@ -77,65 +88,69 @@ async function startRealtimeDetection() {
     await startDetection(stream, voiceGender.value, (result) => {
       // Atualizar store
       try {
-        pitchStore.updatePitch(result)
+        pitchStore.setFrequency(result.frequency || 0)
+        pitchStore.setNote(result.note || '-')
+        pitchStore.setConfidence(result.confidence || 0)
+        pitchStore.setDetecting(true)
         
-        // Atualizar estado local
-        currentFrequency.value = `${result.frequency.toFixed(2)} Hz`
-        currentConfidence.value = result.confidence
+        // Atualizar variáveis locais
+        currentFrequency.value = `${result.frequency?.toFixed(2) || '0.00'} Hz`
+        currentConfidence.value = result.confidence || 0
         
         // Adicionar ao histórico do gráfico
-        if (result.frequency > 0) {
+        if (result.frequency && result.frequency > 0) {
           pitchHistory.value.push({
+            time: Date.now(),
             frequency: result.frequency,
-            note: result.note,
-            timestamp: Date.now()
+            note: result.note || '-',
+            confidence: result.confidence || 0
           })
           
           // Manter apenas os últimos N pontos
           if (pitchHistory.value.length > maxHistoryLength) {
             pitchHistory.value.shift()
           }
+          
+          // Atualizar gráfico
+          updateChart()
         }
         
-        // Atualizar gráfico
-        updateChart()
-        
-        if (result.frequency > 0) {
-          console.log('🎵 Pitch detectado:', result.note, result.frequency.toFixed(2) + 'Hz')
-        }
       } catch (storeError) {
         console.warn('⚠️ Erro ao atualizar store:', storeError)
       }
     })
     
-    // Iniciar loop de animação
-    startAnimationLoop()
-    
-    console.log('✅ Detecção em tempo real iniciada com sucesso')
+    console.log('✅ Detecção iniciada com sucesso')
     
   } catch (error) {
     console.error('❌ Erro ao iniciar detecção:', error)
     errorMessage.value = `Erro ao iniciar: ${error.message}`
+  } finally {
+    isStartingDetection.value = false
   }
 }
 
 function stopRealtimeDetection() {
   try {
+    isStoppingDetection.value = true
     console.log('⏹️ Parando detecção...')
     
     stopDetection()
     stop()
     stopAnimationLoop()
-    pitchStore.stopDetection()
     
     // Resetar estado
+    pitchStore.reset()
     currentFrequency.value = '0.00 Hz'
     currentConfidence.value = 0
+    pitchHistory.value = []
     
     console.log('✅ Detecção parada com sucesso')
     
   } catch (error) {
     console.error('❌ Erro ao parar detecção:', error)
+  } finally {
+    isStoppingDetection.value = false
   }
 }
 
@@ -426,18 +441,18 @@ onUnmounted(() => {
           <div class="control-actions">
             <button 
               @click="startRealtimeDetection"
-              :disabled="isDetecting || isProcessing"
+              :disabled="isDetecting || isProcessing || isStartingDetection"
               class="start-btn"
             >
-              {{ isProcessing ? 'Inicializando...' : (isDetecting ? 'Detectando...' : 'Iniciar Detecção') }}
+              {{ isStartingDetection ? 'Iniciando...' : (isDetecting ? 'Detectando...' : '🎤 Iniciar Detecção') }}
             </button>
             
             <button 
               @click="stopRealtimeDetection"
-              :disabled="!isDetecting"
+              :disabled="!isDetecting || isStoppingDetection"
               class="stop-btn"
             >
-              Parar
+              {{ isStoppingDetection ? 'Parando...' : '🛑 Parar' }}
             </button>
           </div>
         </div>
