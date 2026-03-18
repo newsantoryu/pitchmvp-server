@@ -4,18 +4,103 @@
 import logging
 import numpy as np
 import asyncio
+import torch
+import torchcrepe
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
 # Importar função do módulo realtime
-try:
-    from app.routes_pitch_realtime import process_realtime_frame
-except ImportError:
-    # Fallback se não conseguir importar
-    def process_realtime_frame(samples, sample_rate):
-        logger.error("❌ process_realtime_frame não disponível")
-        return {"error": "Função não disponível"}
+# Removido import circular - função agora está definida neste arquivo
+
+# Mover process_realtime_frame para cá para resolver import circular
+def process_realtime_frame_moved(samples, sample_rate):
+    """
+    Processa frame realtime sem timeout (função pura para ser usada com safe_realtime_pitch)
+    """
+    logger.info(f"📊 Processando {len(samples)} samples")
+    
+    # Torch precisa de batch dimension
+    samples_tensor = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+
+    with torch.no_grad():
+        # torchcrepe.predict com periodicity para dados completos
+        pitch, periodicity = torchcrepe.predict(
+            audio=samples_tensor,
+            sample_rate=sample_rate,
+            fmin=50.0,
+            fmax=2000.0,
+            model="full",
+            hop_length=int(0.01 * sample_rate),  # 10ms por frame
+            device="cpu",
+            return_periodicity=True  # ✅ Obter confidence/periodicity
+        )
+
+    # Pega o primeiro frame do batch
+    freq = float(pitch[0, 0].item())
+    confidence = float(periodicity[0, 0].item())
+    
+    # Análise musical completa
+    from app.music_utils import freq_to_note
+    # Função local para evitar import circular
+    def analyze_voice_characteristics(freq: float, confidence: float) -> dict:
+        """Análise completa das características vocais"""
+        
+        # Classificação de range vocal
+        if freq < 100:
+            voice_type = "Bass"
+            range_desc = "Grave"
+        elif freq < 200:
+            voice_type = "Tenor"
+            range_desc = "Médio-grave"
+        elif freq < 400:
+            voice_type = "Alto"
+            range_desc = "Médio-agudo"
+        else:
+            voice_type = "Soprano"
+            range_desc = "Agudo"
+        
+        return {
+            "voice_type": voice_type,
+            "range_description": range_desc,
+            "frequency_range": f"{freq:.1f}Hz",
+            "confidence_level": "Alta" if confidence > 0.7 else "Média" if confidence > 0.4 else "Baixa"
+        }
+    
+    note_result = freq_to_note(freq)
+    
+    # Análise de voz e range
+    voice_analysis = analyze_voice_characteristics(freq, confidence)
+    
+    # Dados completos do pitch core
+    result = {
+        # Dados básicos
+        "frequency": freq,
+        "note": note_result if isinstance(note_result, str) else (note_result["note"] if note_result else "-"),
+        "cents": note_result.get("cents", 0) if isinstance(note_result, dict) else 0,
+        
+        # Dados de confiança e qualidade
+        "confidence": confidence,
+        "periodicity": confidence,
+        "voiced": confidence > 0.3,  # Threshold melhorado
+        
+        # Análise de voz
+        "voice_analysis": voice_analysis,
+        
+        # Metadados do processamento
+        "sample_rate": sample_rate,
+        "hop_length": int(0.01 * sample_rate),
+        "frame_time": 0.01,
+        "processing_mode": "realtime",
+        "range_info": {
+            "fmin": 50.0,
+            "fmax": 2000.0,
+            "model": "full"
+        }
+    }
+    
+    logger.info(f"✅ Realtime frame processado: {result['note']} ({result['frequency']:.1f}Hz)")
+    return result
 
 # Configurações de timeout diferenciadas
 TIMEOUT_CONFIG = {
@@ -174,9 +259,9 @@ async def safe_realtime_pitch(samples, sample_rate):
     try:
         loop = asyncio.get_event_loop()
         
-        # Função wrapper para passar argumentos corretamente
+        # Usar função local para evitar import circular
         def process_frame_with_args():
-            return process_realtime_frame(samples, sample_rate)
+            return process_realtime_frame_moved(samples, sample_rate)
         
         result = await asyncio.wait_for(
             loop.run_in_executor(None, process_frame_with_args),

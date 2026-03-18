@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { ref, computed } from "vue"
-import { sendAudio, getTranscription, checkJobStatus } from "../services/pitchService.js"
+import { sendAudio, getTranscription, checkJobStatus, getScore } from "../services/pitchService.js"
 
 export const useTranscriptionStore = defineStore("transcription", () => {
   // Estado

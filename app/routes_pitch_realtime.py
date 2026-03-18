@@ -9,7 +9,7 @@ import numpy as np
 from app.database import SessionLocal
 from app.models import Score
 from app.music_utils import detect_range
-from app.pitch_engine import safe_realtime_pitch
+from app.pitch_engine import safe_realtime_pitch, process_realtime_frame_moved  # Importar função movida
 from app.memory_manager import jobs  # Importar jobs do memory_manager para consistência
 
 router = APIRouter()
@@ -238,69 +238,6 @@ def get_job(job_id: str):
     if job["status"] == "done":
         return jobs.pop(job_id)
     return job
-
-
-def process_realtime_frame(samples, sample_rate):
-    """
-    Processa frame realtime sem timeout (função pura para ser usada com safe_realtime_pitch)
-    """
-    logger.info(f"📊 Processando {len(samples)} samples")
-    
-    # Torch precisa de batch dimension
-    samples_tensor = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
-
-    with torch.no_grad():
-        # torchcrepe.predict com periodicity para dados completos
-        pitch, periodicity = torchcrepe.predict(
-            audio=samples_tensor,
-            sample_rate=sample_rate,
-            fmin=50.0,
-            fmax=2000.0,
-            model="full",
-            hop_length=int(0.01 * sample_rate),  # 10ms por frame
-            device="cpu",
-            return_periodicity=True  # ✅ Obter confidence/periodicity
-        )
-
-    # Pega o primeiro frame do batch
-    freq = float(pitch[0, 0].item())
-    confidence = float(periodicity[0, 0].item())
-    
-    # Análise musical completa
-    note_result = freq_to_note(freq)
-    
-    # Análise de voz e range
-    voice_analysis = analyze_voice_characteristics(freq, confidence)
-    
-    # Dados completos do pitch core
-    result = {
-        # Dados básicos
-        "frequency": freq,
-        "note": note_result["note"] if note_result else "-",
-        "cents": note_result.get("cents", 0),
-        
-        # Dados de confiança e qualidade
-        "confidence": confidence,
-        "periodicity": confidence,
-        "voiced": confidence > 0.3,  # Threshold melhorado
-        
-        # Análise de voz
-        "voice_analysis": voice_analysis,
-        
-        # Metadados do processamento
-        "sample_rate": sample_rate,
-        "hop_length": int(0.01 * sample_rate),
-        "frame_time": 0.01,
-        "processing_mode": "realtime",
-        "range_info": {
-            "fmin": 50.0,
-            "fmax": 2000.0,
-            "model": "full"
-        }
-    }
-    
-    logger.info(f"✅ Frame processado: {result['note']} ({result['frequency']:.2f}Hz)")
-    return result
 
 @router.get("/health")
 def health():

@@ -173,3 +173,6 @@ export async function getTranscriptionStats() {
     averageDuration: scores.reduce((acc, s) => acc + (s.duration || 0), 0) / scores.length || 0
   }
 }
+
+// Exportar getScore para uso em outros módulos
+export { getScore }
