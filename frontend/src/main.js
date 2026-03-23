@@ -3,15 +3,23 @@ import { createPinia } from 'pinia'
 import router from './router'
 import App from './App.vue'
 import './style.css'
+import { initializeAPI } from './services/api.js'
 
-// Criar app Vue
-const app = createApp(App)
+async function bootstrap() {
+    // Inicializa API com porta dinâmica antes de montar o app
+    await initializeAPI()
 
-// Adicionar Pinia
-app.use(createPinia())
+    // Criar app Vue
+    const app = createApp(App)
 
-// Adicionar Router
-app.use(router)
+    // Adicionar Pinia
+    app.use(createPinia())
 
-// Montar app
-app.mount('#app')
+    // Adicionar Router
+    app.use(router)
+
+    // Montar app
+    app.mount('#app')
+}
+
+bootstrap()

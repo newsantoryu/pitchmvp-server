@@ -5,15 +5,59 @@ import axios from 'axios'
 import { retryWithConfig } from '../utils/retry.js'
 
 // Configuração base da API
-const api = axios.create({
-  baseURL: "http://localhost:8000/api/v1",
-  timeout: 30000, // 30 segundos (reduzido para não bloquear demais)
+let currentBaseURL = "http://localhost:8000/api/v1";
+
+let api = axios.create({
+  baseURL: currentBaseURL,
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Interceptor para logging de requisições
+/**
+ * Descobre porta dinâmica do backend
+ * Procura servidor nas portas 8000-8010 (mesmo range do start.sh)
+ */
+async function discoverBackendPort(startPort = 8000, endPort = 8010) {
+  console.log('🔍 Procurando backend nas portas', startPort, '-', endPort);
+
+  for (let port = startPort; port <= endPort; port++) {
+    try {
+      const healthUrl = `http://localhost:${port}/api/v1/pitch/health`;
+      const response = await axios.get(healthUrl, { timeout: 2000 });
+
+      if (response.status === 200) {
+        console.log(`✅ Backend encontrado na porta ${port}`);
+        return port;
+      }
+    } catch (error) {
+      // Porta não respondeu, tentar próxima
+      continue;
+    }
+  }
+
+  console.warn('⚠️ Backend não encontrado, usando porta padrão 8000');
+  return 8000;
+}
+
+/**
+ * Inicializa API com porta dinâmica
+ * Deve ser chamado no startup da aplicação
+ */
+export async function initializeAPI() {
+  const port = await discoverBackendPort();
+  const newBaseURL = `http://localhost:${port}/api/v1`;
+
+  if (newBaseURL !== currentBaseURL) {
+    console.log(`🔄 Atualizando API baseURL: ${currentBaseURL} → ${newBaseURL}`);
+    currentBaseURL = newBaseURL;
+    api.defaults.baseURL = newBaseURL;
+  }
+
+  return { port, baseURL: newBaseURL };
+}
+
 api.interceptors.request.use(
   (config) => {
     const timeoutMs = config.timeout || 30000; // Default global
