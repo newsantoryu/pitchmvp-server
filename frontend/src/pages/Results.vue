@@ -1,48 +1,95 @@
 <script setup>
+/**
+ * Results.vue — Visualização de cifra com pitch detection
+ *
+ * Algoritmo de supressão de notas repetidas (buildAnnotatedWords):
+ *
+ *   Regra 1 — Line reset:
+ *     Início de cada linha visual zera o contexto tonal.
+ *     O olho do leitor não carrega memória entre linhas —
+ *     a primeira nota de qualquer linha sempre aparece.
+ *
+ *   Regra 2 — Gap reset:
+ *     Após GAP_RESET_THRESHOLD palavras consecutivas sem nota, o
+ *     contexto é considerado perdido (pausa, frase nova).
+ *     A próxima nota aparece mesmo que seja igual à última exibida.
+ *
+ *   Regra 3 — Change detection:
+ *     Nota só é exibida textualmente quando difere da última exibida.
+ *
+ *   Regra 4 — Continuation indicator:
+ *     Palavra com nota ativa mas suprimida recebe status 'continues'.
+ *     O template renderiza um underline sutil na cor da nota —
+ *     sinal visual de "ligadura": "continue cantando esta nota".
+ *
+ * NoteStatus:
+ *   'show'      — nota mudou → exibir texto acima da palavra
+ *   'continues' — mesma nota → suprimir texto, mostrar underline
+ *   'gap'       — sem nota detectada → nada exibido
+ */
+
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getScore } from '../services/api.js'
 
-const route = useRoute()
+const route  = useRoute()
 const router = useRouter()
 
 const transcriptionId = computed(() => route.params.id)
-const transcription = ref(null)
-const loading = ref(true)
-const error = ref(null)
+const transcription   = ref(null)
+const loading         = ref(true)
+const error           = ref(null)
+const viewMode        = ref('cifra')
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Constantes
+// ────────────────────────────────────────────────────────────────────────────────
+
+const WORDS_PER_LINE = 8
+
+/**
+ * Após este número de palavras sem nota consecutivas, o contexto tonal é
+ * considerado perdido e a próxima nota será exibida independente de repetição.
+ */
+const GAP_RESET_THRESHOLD = 3
+
+/**
+ * Paleta de oitavas: escala perceptual fria (grave) → quente (agudo).
+ * Permite ao cantor inferir o contorno melódico pela cor sem ler o texto.
+ */
+const OCTAVE_COLORS = {
+  1: '#64748b',  // sub-grave
+  2: '#7c9ec9',  // grave
+  3: '#4f86c6',  // médio-grave
+  4: '#5b72d4',  // médio
+  5: '#7c6bb5',  // médio-agudo
+  6: '#a855f7',  // agudo
+  7: '#d946ef',  // muito agudo
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Carregamento
+// ────────────────────────────────────────────────────────────────────────────────
 
 async function loadTranscription() {
   try {
     loading.value = true
-    error.value = null
-    
-    if (!transcriptionId.value) {
-      // Se não tiver ID, redirecionar para home
-      router.push('/')
-      return
-    }
-    
-    console.log('📊 Carregando detalhes da cifra:', transcriptionId.value)
+    error.value   = null
+    if (!transcriptionId.value) { router.push('/'); return }
+
     const scoreData = await getScore(transcriptionId.value)
-    
-    // Formatar dados para exibição
     transcription.value = {
-      id: scoreData.id,
-      title: scoreData.title,
-      duration: scoreData.duration,
-      language: scoreData.language,
-      words: scoreData.words,
-      createdAt: new Date().toISOString(), // Backend não tem createdAt, usar atual
-      key: extractKey(scoreData.words),
-      tempo: estimateTempo(scoreData.words),
-      range: calculateRange(scoreData.words)
+      id:        scoreData.id,
+      title:     scoreData.title,
+      duration:  scoreData.duration,
+      language:  scoreData.language,
+      words:     scoreData.words,
+      createdAt: new Date().toISOString(),
+      key:       extractKey(scoreData.words),
+      range:     calculateRange(scoreData.words),
     }
-    
-    console.log('✅ Cifra carregada com sucesso!')
   } catch (err) {
-    console.error('❌ Erro ao carregar cifra:', err)
     error.value = err.message
-    // Se não encontrar, redirecionar para scores
     if (err.message.includes('404') || err.message.includes('não encontrado')) {
       router.push('/scores')
     }
@@ -51,901 +98,680 @@ async function loadTranscription() {
   }
 }
 
-function goHome() {
-  router.push('/')
-}
+// ────────────────────────────────────────────────────────────────────────────────
+// Algoritmo de supressão — função pura (sem efeitos colaterais, testável)
+// ────────────────────────────────────────────────────────────────────────────────
 
-function goBack() {
-  router.push('/scores')
-}
+/**
+ * @typedef {{ text: string, note: string|null, start?: number, end?: number }} Word
+ *
+ * @typedef {{
+ *   text:        string,
+ *   actualNote:  string|null,
+ *   displayNote: string|null,
+ *   noteStatus:  'show'|'continues'|'gap',
+ *   start:       number|null,
+ *   end:         number|null,
+ * }} AnnotatedWord
+ *
+ * @param {Word[]} words
+ * @param {number} wordsPerLine
+ * @returns {AnnotatedWord[][]}
+ */
+function buildAnnotatedWords(words, wordsPerLine) {
+  if (!words?.length) return []
 
-function exportResults() {
-  if (!transcription.value) return
-  
-  const data = JSON.stringify(transcription.value, null, 2)
-  const blob = new Blob([data], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `transcription-${transcription.value.id || 'latest'}.json`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
+  let lastShownNote = null  // última nota efetivamente exibida na tela
+  let gapCount      = 0     // palavras consecutivas sem nota desde a última nota
 
-function formatTime(seconds) {
-  if (!seconds) return '0:00'
-  const minutes = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${minutes}:${secs.toString().padStart(2, '0')}`
-}
+  const annotated = words.map((word, idx) => {
+    const isLineStart = idx % wordsPerLine === 0
+    const note        = word.note ?? null
 
-function formatDate(dateString) {
-  return new Date(dateString).toLocaleDateString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
+    // Regra 1: início de linha → reset total do contexto
+    if (isLineStart) {
+      lastShownNote = null
+      gapCount      = 0
+    }
+
+    let displayNote = null
+    let noteStatus  = 'gap'
+
+    if (note === null) {
+      // Regra 2: lacuna — incrementa contador e reseta contexto se necessário
+      gapCount++
+      if (gapCount >= GAP_RESET_THRESHOLD) {
+        lastShownNote = null  // contexto tonal perdido
+      }
+      noteStatus  = 'gap'
+      displayNote = null
+
+    } else {
+      gapCount = 0  // recomeça contagem de lacunas
+
+      if (note !== lastShownNote) {
+        // Regra 3: nota mudou → exibir
+        noteStatus    = 'show'
+        displayNote   = note
+        lastShownNote = note
+      } else {
+        // Regra 4: mesma nota → suprimir, marcar como continuação
+        noteStatus  = 'continues'
+        displayNote = null
+      }
+    }
+
+    return {
+      text:        word.text  ?? '',
+      actualNote:  note,
+      displayNote,
+      noteStatus,
+      start:       word.start ?? null,
+      end:         word.end   ?? null,
+    }
   })
-}
 
-// Funções auxiliares para análise musical
-function calculateRange(words) {
-  const notesWithPitch = words
-    .filter(w => w.note)
-    .map(w => w.note)
-  
-  if (notesWithPitch.length === 0) return null
-  
-  const noteNumbers = notesWithPitch.map(note => {
-    const noteName = note.replace(/[0-9]/g, '')
-    const octave = parseInt(note.match(/[0-9]/) || '4')
-    const noteMap = { 'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5, 'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11 }
-    return noteMap[noteName] + (octave * 12)
-  })
-  
-  const minNote = Math.min(...noteNumbers)
-  const maxNote = Math.max(...noteNumbers)
-  
-  return {
-    lowest: notesWithPitch[noteNumbers.indexOf(minNote)],
-    highest: notesWithPitch[noteNumbers.indexOf(maxNote)],
-    span: maxNote - minNote
+  // Particionar em linhas visuais
+  const lines = []
+  for (let i = 0; i < annotated.length; i += wordsPerLine) {
+    lines.push(annotated.slice(i, i + wordsPerLine))
   }
+  return lines
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Computed
+// ────────────────────────────────────────────────────────────────────────────────
+
+const cifraLines = computed(() =>
+  transcription.value
+    ? buildAnnotatedWords(transcription.value.words, WORDS_PER_LINE)
+    : []
+)
+
+const stats = computed(() => {
+  if (!transcription.value) return null
+  const words  = transcription.value.words
+  const total  = words.length
+  const voiced = words.filter(w => w.note).length
+  const shown  = cifraLines.value.flat().filter(w => w.noteStatus === 'show').length
+  return {
+    total,
+    voiced,
+    shown,
+    pct: total ? Math.round((voiced / total) * 100) : 0,
+  }
+})
+
+const noteDistribution = computed(() => {
+  if (!transcription.value) return []
+  const count = {}
+  transcription.value.words.forEach(w => {
+    if (w.note) count[w.note] = (count[w.note] || 0) + 1
+  })
+  const max = Math.max(...Object.values(count), 1)
+  return Object.entries(count)
+    .sort((a, b) => b[1] - a[1])
+    .map(([note, n]) => ({ note, n, pct: Math.round((n / max) * 100) }))
+})
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Helpers visuais
+// ────────────────────────────────────────────────────────────────────────────────
+
+function noteColor(note) {
+  if (!note) return 'transparent'
+  const oct = parseInt(note.match(/\d+/)?.[0] ?? '4')
+  return OCTAVE_COLORS[oct] ?? OCTAVE_COLORS[4]
+}
+
+/** Versão com alpha para o underline de continuação */
+function noteColorSoft(note) {
+  return noteColor(note) + '40'  // ~25% opacidade
+}
+
+function wordTooltip(word) {
+  const time = word.start != null ? ` · ${formatTime(word.start)}` : ''
+  if (!word.actualNote) return `${word.text}${time}`
+  const hint = word.noteStatus === 'continues' ? ' (continua)' : ''
+  return `${word.text} — ${word.actualNote}${hint}${time}`
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Helpers musicais
+// ────────────────────────────────────────────────────────────────────────────────
+
+function calculateRange(words) {
+  const noteMap = { C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11 }
+  const midis = words
+    .filter(w => w.note)
+    .map(w => {
+      const name   = w.note.replace(/\d/g, '')
+      const octave = parseInt(w.note.match(/\d/)?.[0] ?? '4')
+      return (noteMap[name] ?? 0) + octave * 12
+    })
+  if (!midis.length) return null
+  const lo = Math.min(...midis)
+  const hi = Math.max(...midis)
+  const toNote = m => {
+    const ns = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+    return ns[m % 12] + Math.floor(m / 12)
+  }
+  return { lowest: toNote(lo), highest: toNote(hi), span: hi - lo }
 }
 
 function extractKey(words) {
-  const notesWithPitch = words
-    .filter(w => w.note)
-    .map(w => w.note.replace(/[0-9]/g, ''))
-  
-  if (notesWithPitch.length === 0) return null
-  
-  const noteCount = {}
-  notesWithPitch.forEach(note => {
-    noteCount[note] = (noteCount[note] || 0) + 1
+  const count = {}
+  words.filter(w => w.note).forEach(w => {
+    const name = w.note.replace(/\d/g, '')
+    count[name] = (count[name] || 0) + 1
   })
-  
-  const sortedNotes = Object.entries(noteCount)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([note]) => note)
-  
-  // Simplificado: retornar a nota mais comum como tom
-  return sortedNotes[0] || null
+  return Object.entries(count).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
 }
 
-function estimateTempo(words) {
-  if (words.length < 2) return null
-  
-  const durations = []
-  for (let i = 1; i < words.length; i++) {
-    const prevWord = words[i - 1]
-    const currWord = words[i]
-    
-    if (prevWord.end && currWord.start) {
-      const duration = currWord.start - prevWord.end
-      if (duration > 0 && duration < 2) { // Entre 0.5s e 2s por palavra
-        durations.push(duration)
-      }
-    }
-  }
-  
-  if (durations.length === 0) return null
-  
-  const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length
-  const estimatedBPM = Math.round(60 / avgDuration)
-  
-  return Math.max(60, Math.min(200, estimatedBPM)) // Limitar entre 60-200 BPM
+function formatTime(s) {
+  if (s == null) return '0:00'
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 }
 
-function getNoteDistribution(words) {
-  const noteCount = {}
-  
-  words.forEach(word => {
-    if (word.note) {
-      const note = word.note
-      noteCount[note] = (noteCount[note] || 0) + 1
-    }
+// ────────────────────────────────────────────────────────────────────────────────
+// Exportar cifra — aplica supressão no texto exportado (mesmo critério da tela)
+// ────────────────────────────────────────────────────────────────────────────────
+
+function exportCifra() {
+  if (!transcription.value) return
+
+  let out = `${transcription.value.title}\n`
+  if (transcription.value.key)
+    out += `Tom: ${transcription.value.key}\n`
+  if (transcription.value.range)
+    out += `Range: ${transcription.value.range.lowest} – ${transcription.value.range.highest}\n`
+  out += '\n'
+
+  cifraLines.value.forEach(line => {
+    // Largura de cada coluna = max(nota, palavra, mínimo 3)
+    const colW = line.map(w =>
+      Math.max(w.displayNote?.length ?? 0, w.text?.length ?? 0, 3)
+    )
+    // Linha de notas: só imprime onde a nota mudou (supressão aplicada)
+    const noteRow = line
+      .map((w, i) => (w.displayNote ?? '').padEnd(colW[i]))
+      .join(' ')
+    // Linha de palavras
+    const wordRow = line
+      .map((w, i) => (w.text ?? '').padEnd(colW[i]))
+      .join(' ')
+
+    out += noteRow.trimEnd() + '\n'
+    out += wordRow.trimEnd() + '\n\n'
   })
-  
-  return noteCount
+
+  const blob = new Blob([out], { type: 'text/plain' })
+  const a    = Object.assign(document.createElement('a'), {
+    href:     URL.createObjectURL(blob),
+    download: `cifra-${transcription.value.id}.txt`,
+  })
+  a.click()
+  URL.revokeObjectURL(a.href)
 }
 
-onMounted(() => {
-  loadTranscription()
-})
+function exportJSON() {
+  if (!transcription.value) return
+  const blob = new Blob(
+    [JSON.stringify(transcription.value, null, 2)],
+    { type: 'application/json' }
+  )
+  const a = Object.assign(document.createElement('a'), {
+    href:     URL.createObjectURL(blob),
+    download: `pitch-${transcription.value.id}.json`,
+  })
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+onMounted(loadTranscription)
 </script>
 
 <template>
-  <div class="results-page">
-    <!-- Header -->
-    <header class="page-header">
-      <button @click="goBack" class="back-btn">← Voltar</button>
-      <div class="header-content">
-        <h1>📊 {{ transcription?.title || 'Carregando...' }}</h1>
-        <span class="header-id" v-if="transcription">ID: {{ transcription.id }}</span>
-      </div>
-    </header>
+  <div class="rp">
 
-    <!-- Loading State -->
-    <div v-if="loading" class="loading-state">
-      <div class="loading-card">
-        <div class="loading-icon">⏳</div>
-        <h2>Carregando transcrição...</h2>
-        <p>Buscando dados da cifra</p>
+    <!-- ── Loading ──────────────────────────────────────────────────────────── -->
+    <div v-if="loading" class="rp-center">
+      <div class="rp-card rp-loading">
+        <div class="rp-spinner"></div>
+        <p>Carregando cifra…</p>
       </div>
     </div>
 
-    <!-- Error State -->
-    <div v-else-if="error" class="error-state">
-      <div class="error-card">
-        <div class="error-icon">❌</div>
-        <h2>Erro ao carregar</h2>
-        <p>{{ error }}</p>
-        <button @click="goBack" class="retry-btn">← Voltar para Cifras</button>
+    <!-- ── Error ────────────────────────────────────────────────────────────── -->
+    <div v-else-if="error" class="rp-center">
+      <div class="rp-card">
+        <p class="rp-err">{{ error }}</p>
+        <button class="rp-btn" @click="router.push('/scores')">← Voltar</button>
       </div>
     </div>
 
-    <!-- Main Content -->
-    <main class="results-content" v-else-if="transcription">
-      <!-- Notes Timeline - MAIN VIEW -->
-      <section class="pitch-section main-timeline-section">
-        <div class="pitch-card">
-          <div class="notes-timeline main-view">
-            <div class="timeline-stats horizontal">
-              <div class="timeline-stat">
-                <span class="stat-number">{{ transcription.words.length }}</span>
-                <span class="stat-label">Palavras</span>
-              </div>
-              <div class="timeline-stat">
-                <span class="stat-number">{{ transcription.words.filter(w => w.note).length }}</span>
-                <span class="stat-label">Notas</span>
-              </div>
-              <div class="timeline-stat">
-                <span class="stat-number">{{ Math.round((transcription.words.filter(w => w.note).length / transcription.words.length) * 100) }}%</span>
-                <span class="stat-label">Precisão</span>
-              </div>
-            </div>
-            <div class="timeline-container main-timeline">
-              <div 
-                v-for="(word, index) in transcription.words"
-                :key="index"
-                class="note-block main-block"
-                :class="{ 'valid': word.note, 'invalid': !word.note }"
-                :title="`Tempo: ${formatTime(word.start || index * 0.1)} | Palavra: ${word.text || 'N/A'} | Nota: ${word.note || 'N/A'}`"
-              >
-                <div class="word-text">{{ word.text || '?' }}</div>
-                <div class="word-note">{{ word.note || '-' }}</div>
-              </div>
-            </div>
+    <!-- ── Main ─────────────────────────────────────────────────────────────── -->
+    <main v-else-if="transcription">
+
+      <!-- Header -->
+      <header class="rp-header">
+        <button class="rp-btn-ghost" @click="router.push('/scores')">← Cifras</button>
+        <div class="rp-header-center">
+          <h1 class="rp-title">{{ transcription.title }}</h1>
+          <div class="rp-meta">
+            <span v-if="transcription.duration">{{ formatTime(transcription.duration) }}</span>
+            <span v-if="transcription.key">Tom: <b>{{ transcription.key }}</b></span>
+            <span v-if="transcription.range">
+              Range: <b>{{ transcription.range.lowest }}</b>–<b>{{ transcription.range.highest }}</b>
+            </span>
+            <span v-if="stats">
+              {{ stats.voiced }} notas · <b>{{ stats.shown }} marcações</b> · {{ stats.pct }}%
+            </span>
           </div>
         </div>
-      </section>
-
-      <!-- Summary -->
-      <section class="summary-section">
-        <div class="summary-card">
-          <h2>📋 Resumo da Análise</h2>
-          <div class="summary-grid">
-            <div class="summary-item">
-              <span class="item-label">ID</span>
-              <span class="item-value">{{ transcription.id || 'N/A' }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Título</span>
-              <span class="item-value">{{ transcription.title || 'Sem título' }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Duração</span>
-              <span class="item-value">{{ formatTime(transcription.duration) }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Tom</span>
-              <span class="item-value">{{ transcription.key || 'N/A' }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Andamento</span>
-              <span class="item-value">{{ transcription.tempo || 'N/A' }} BPM</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Idioma</span>
-              <span class="item-value">{{ transcription.language?.toUpperCase() || 'N/A' }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Data</span>
-              <span class="item-value">{{ formatDate(transcription.createdAt) }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="item-label">Status</span>
-              <span class="item-value success">✅ Concluído</span>
-            </div>
-          </div>
+        <div class="rp-header-actions">
+          <button class="rp-btn-ghost" @click="exportCifra" title="Exportar cifra em texto">↓ Cifra</button>
+          <button class="rp-btn-ghost" @click="exportJSON"  title="Exportar JSON">↓ JSON</button>
         </div>
-      </section>
+      </header>
 
-      <!-- Pitch Analysis -->
-      <section class="pitch-section">
-        <div class="pitch-card">
-          <h2>🎵 Análise de Pitch</h2>
-          
-          <!-- Statistics -->
-          <div class="pitch-stats">
-            <div class="stat-item">
-              <span class="stat-number">{{ transcription.words.length }}</span>
-              <span class="stat-label">Notas Detectadas</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-number">{{ transcription.words.filter(w => w.note).length }}</span>
-              <span class="stat-label">Notas Válidas</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-number">{{ Math.round((transcription.words.filter(w => w.note).length / transcription.words.length) * 100) }}%</span>
-              <span class="stat-label">Precisão</span>
-            </div>
-          </div>
-
-          <!-- Note Distribution -->
-          <div class="note-distribution">
-            <h3>🎼 Distribuição de Notas</h3>
-            <div class="distribution-chart">
-              <div 
-                v-for="(count, note) in getNoteDistribution(transcription.words)"
-                :key="note"
-                class="distribution-item"
-              >
-                <span class="note-name">{{ note }}</span>
-                <div class="distribution-bar">
-                  <div 
-                    class="distribution-fill" 
-                    :style="{ width: (count / Math.max(...Object.values(getNoteDistribution(transcription.words))) * 100) + '%' }"
-                  ></div>
-                </div>
-                <span class="note-count">{{ count }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Raw Data -->
-      <section class="data-section">
-        <div class="data-card">
-          <h2>📊 Dados Brutos</h2>
-          
-          <!-- Actions -->
-          <div class="data-actions">
-            <button @click="exportResults" class="export-btn">
-              📥 Exportar JSON
-            </button>
-            <button @click="goHome" class="home-btn">
-              🏠 Nova Análise
-            </button>
-          </div>
-
-          <!-- Data Preview -->
-          <div class="data-preview">
-            <h3>🔍 Preview dos Dados</h3>
-            <pre class="json-preview">{{ JSON.stringify(transcription, null, 2) }}</pre>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <!-- Empty State -->
-    <div v-else class="empty-state">
-      <div class="empty-card">
-        <div class="empty-icon">📊</div>
-        <h2>Nenhum resultado encontrado</h2>
-        <p>Não há resultados para exibir</p>
-        <button @click="goHome" class="action-btn">
-          🏠 Voltar para Home
+      <!-- Tabs -->
+      <div class="rp-tabs">
+        <button class="rp-tab" :class="{ active: viewMode === 'cifra' }" @click="viewMode = 'cifra'">
+          Cifra
+        </button>
+        <button class="rp-tab" :class="{ active: viewMode === 'stats' }" @click="viewMode = 'stats'">
+          Análise
         </button>
       </div>
-    </div>
+
+      <!-- ════════════════════════════════════════════════════════════════════ -->
+      <!-- VIEW: CIFRA                                                          -->
+      <!-- ════════════════════════════════════════════════════════════════════ -->
+      <section v-if="viewMode === 'cifra'" class="rp-cifra-wrap">
+        <div class="rp-cifra">
+
+          <div v-for="(line, li) in cifraLines" :key="li" class="cifra-line">
+            <div
+              v-for="(word, wi) in line"
+              :key="wi"
+              class="cifra-word"
+              :title="wordTooltip(word)"
+              :style="word.actualNote ? {
+                '--nc':      noteColor(word.actualNote),
+                '--nc-soft': noteColorSoft(word.actualNote),
+              } : {}"
+            >
+              <!--
+                Slot da nota (linha de cima).
+                Altura SEMPRE reservada independente do status →
+                garante alinhamento vertical uniforme de toda a linha.
+
+                show      → texto da nota na cor da oitava
+                continues → espaço invisível (altura preservada)
+                gap       → espaço invisível (altura preservada)
+              -->
+              <span class="cifra-note" :class="`cifra-note--${word.noteStatus}`">
+                {{ word.noteStatus === 'show' ? word.displayNote : '\u00A0' }}
+              </span>
+
+              <!--
+                Texto da palavra (linha de baixo).
+
+                show      → cor clara — onset de nota nova
+                continues → cor média + underline na cor da nota (ligadura visual)
+                gap       → cor apagada
+              -->
+              <span class="cifra-text" :class="`cifra-text--${word.noteStatus}`">
+                {{ word.text }}
+              </span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Legenda -->
+        <div class="rp-legend">
+          <span class="legend-label">Oitavas:</span>
+          <span
+            v-for="(color, oct) in OCTAVE_COLORS"
+            :key="oct"
+            class="legend-dot"
+            :style="{ color }"
+          >● {{ oct }}</span>
+          <span class="legend-sep">&nbsp;·&nbsp;</span>
+          <span class="legend-hint">
+            <span class="legend-ul-sample"></span>
+            nota continua
+          </span>
+          <span class="legend-sep">&nbsp;·&nbsp;</span>
+          <span class="legend-hint legend-hint--gap">palavra sem nota</span>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════════════ -->
+      <!-- VIEW: ANÁLISE                                                        -->
+      <!-- ════════════════════════════════════════════════════════════════════ -->
+      <section v-else-if="viewMode === 'stats'" class="rp-stats-wrap">
+
+        <div class="rp-kpi-row">
+          <div class="rp-kpi">
+            <span class="kpi-val">{{ stats?.total }}</span>
+            <span class="kpi-label">Palavras</span>
+          </div>
+          <div class="rp-kpi">
+            <span class="kpi-val">{{ stats?.voiced }}</span>
+            <span class="kpi-label">Com nota</span>
+          </div>
+          <div class="rp-kpi">
+            <span class="kpi-val">{{ stats?.shown }}</span>
+            <span class="kpi-label">Marcações</span>
+          </div>
+          <div class="rp-kpi">
+            <span class="kpi-val">{{ stats?.pct }}%</span>
+            <span class="kpi-label">Cobertura</span>
+          </div>
+          <div class="rp-kpi" v-if="transcription.range">
+            <span class="kpi-val">{{ transcription.range.span }}</span>
+            <span class="kpi-label">Semitons range</span>
+          </div>
+        </div>
+
+        <div class="rp-dist-card">
+          <h3 class="rp-dist-title">Distribuição de Notas</h3>
+          <div class="rp-dist-list">
+            <div v-for="item in noteDistribution" :key="item.note" class="rp-dist-row">
+              <span class="rp-dist-note" :style="{ color: noteColor(item.note) }">{{ item.note }}</span>
+              <div class="rp-dist-bar-wrap">
+                <div class="rp-dist-bar"
+                  :style="{ width: item.pct + '%', background: noteColor(item.note) }"
+                ></div>
+              </div>
+              <span class="rp-dist-count">{{ item.n }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="rp-info-card">
+          <div class="rp-info-row" v-if="transcription.key">
+            <span>Tom estimado</span><b>{{ transcription.key }}</b>
+          </div>
+          <div class="rp-info-row" v-if="transcription.range">
+            <span>Nota mais grave</span><b>{{ transcription.range.lowest }}</b>
+          </div>
+          <div class="rp-info-row" v-if="transcription.range">
+            <span>Nota mais aguda</span><b>{{ transcription.range.highest }}</b>
+          </div>
+          <div class="rp-info-row">
+            <span>Duração</span><b>{{ formatTime(transcription.duration) }}</b>
+          </div>
+          <div class="rp-info-row">
+            <span>Idioma</span><b>{{ transcription.language?.toUpperCase() }}</b>
+          </div>
+          <div class="rp-info-row">
+            <span>Notas exibidas / detectadas</span>
+            <b>{{ stats?.shown }} / {{ stats?.voiced }}</b>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+
   </div>
 </template>
 
-<script>
-export default {
-  methods: {
-    getNoteDistribution(words) {
-      const distribution = {}
-      words.forEach(word => {
-        if (word.note) {
-          distribution[word.note] = (distribution[word.note] || 0) + 1
-        }
-      })
-      return distribution
-    }
-  }
-}
-</script>
-
 <style scoped>
-.results-page {
+/* ── Reset ────────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+.rp {
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 2rem;
+  background: #0f1117;
+  color: #e2e8f0;
+  font-family: 'Georgia', 'Times New Roman', serif;
+  padding-bottom: 4rem;
 }
 
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 2rem;
-  color: white;
+/* ── Centro (loading / erro) ─────────────────────────────────────────────────── */
+.rp-center {
+  display: flex; align-items: center; justify-content: center; min-height: 100vh;
+}
+.rp-card {
+  background: #1a1d27; border: 1px solid #2d3148; border-radius: 12px;
+  padding: 2.5rem; text-align: center; max-width: 360px;
+}
+.rp-loading { display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+.rp-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid #2d3148; border-top-color: #4f86c6;
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.rp-err { color: #f87171; margin-bottom: 1.5rem; }
+
+/* ── Botões ──────────────────────────────────────────────────────────────────── */
+.rp-btn, .rp-btn-ghost {
+  font-family: inherit; font-size: 0.85rem; border-radius: 6px;
+  cursor: pointer; padding: 0.5rem 1rem;
+  transition: background 0.15s, color 0.15s; white-space: nowrap;
+}
+.rp-btn             { background: #4f86c6; color: #fff; border: none; }
+.rp-btn:hover       { background: #3a6fa8; }
+.rp-btn-ghost       { background: transparent; color: #94a3b8; border: 1px solid #2d3148; }
+.rp-btn-ghost:hover { background: #1a1d27; color: #e2e8f0; }
+
+/* ── Header ──────────────────────────────────────────────────────────────────── */
+.rp-header {
+  display: flex; align-items: flex-start; gap: 1.5rem;
+  padding: 2rem 2rem 1.25rem; border-bottom: 1px solid #1e2135;
+}
+.rp-header-center { flex: 1; min-width: 0; }
+.rp-title {
+  font-size: clamp(1.1rem, 3vw, 1.75rem); font-weight: 600; color: #f1f5f9;
+  letter-spacing: -0.02em; line-height: 1.2; margin-bottom: 0.5rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rp-meta {
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  font-size: 0.8rem; color: #64748b; font-family: 'Courier New', monospace;
+}
+.rp-meta b { color: #94a3b8; font-weight: 600; }
+.rp-header-actions { display: flex; gap: 0.5rem; flex-shrink: 0; padding-top: 0.1rem; }
+
+/* ── Tabs ────────────────────────────────────────────────────────────────────── */
+.rp-tabs { display: flex; padding: 0 2rem; border-bottom: 1px solid #1e2135; }
+.rp-tab {
+  font-family: inherit; font-size: 0.85rem; background: transparent; border: none;
+  border-bottom: 2px solid transparent; color: #64748b; cursor: pointer;
+  padding: 0.85rem 1.25rem; transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+.rp-tab:hover  { color: #94a3b8; }
+.rp-tab.active { color: #4f86c6; border-bottom-color: #4f86c6; }
+
+/* ══════════════════════════════════════════════════════════════════════════════ */
+/* CIFRA                                                                          */
+/* ══════════════════════════════════════════════════════════════════════════════ */
+
+.rp-cifra-wrap {
+  padding: 2.5rem 2rem;
+  max-width: 940px;
+  margin: 0 auto;
 }
 
-.header-content {
-  flex: 1;
+.rp-cifra {
+  background: #13161f;
+  border: 1px solid #1e2135;
+  border-radius: 10px;
+  padding: 2.5rem 2.5rem 3rem;
+}
+
+/* ── Linha de cifra ──────────────────────────────────────────────────────────── */
+.cifra-line {
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;   /* baseline unificada: palavras de alturas diferentes alinham pela base */
+  gap: 0 0.1rem;
+  margin-bottom: 2.4rem;
+}
+.cifra-line:last-child { margin-bottom: 0; }
+
+/* ── Par nota + palavra ──────────────────────────────────────────────────────── */
+.cifra-word {
+  display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
+  padding: 0 0.4rem 0 0;
+  cursor: default;
+
+  /* CSS vars injetadas pelo template com as cores da nota desta palavra */
+  --nc:      #4f86c6;
+  --nc-soft: #4f86c640;
 }
 
-.page-header h1 {
-  font-size: 2.5rem;
-  margin: 0;
+/* ── Slot da nota (linha de cima) ────────────────────────────────────────────── */
+/*
+ * A altura mínima é SEMPRE reservada, independente do status.
+ * Isso é crítico para o alinhamento: se palavras com e sem nota
+ * tivessem alturas diferentes, a linha visual ficaria irregular.
+ */
+.cifra-note {
+  font-family: 'Courier New', monospace;
+  font-size: 0.76rem;
   font-weight: 700;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-}
-
-.header-id {
-  font-size: 1rem;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 500;
-  margin-top: 0.25rem;
-}
-
-.back-btn {
-  padding: 0.75rem 1.5rem;
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 8px;
-  color: white;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  font-weight: 600;
-}
-
-.back-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-
-.loading-state,
-.error-state {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 60vh;
-}
-
-.loading-card,
-.error-card {
-  background: rgba(255, 255, 255, 0.95);
-  padding: 3rem;
-  border-radius: 16px;
-  backdrop-filter: blur(10px);
-  text-align: center;
-  max-width: 400px;
-}
-
-.loading-icon,
-.error-icon {
-  font-size: 4rem;
-  margin-bottom: 1rem;
-}
-
-.loading-card h2,
-.error-card h2 {
-  margin-bottom: 1rem;
-  color: #333;
-}
-
-.loading-card p,
-.error-card p {
-  color: #666;
-  margin-bottom: 2rem;
-}
-
-.retry-btn {
-  padding: 1rem 2rem;
-  background: #2196f3;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.retry-btn:hover {
-  background: #1976d2;
-}
-
-.results-content {
-  max-width: 1200px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
-}
-
-.summary-section,
-.pitch-section,
-.data-section {
-  display: flex;
-  justify-content: center;
-}
-
-.summary-card,
-.pitch-card,
-.data-card {
-  background: rgba(255, 255, 255, 0.95);
-  padding: 2rem;
-  border-radius: 16px;
-  backdrop-filter: blur(10px);
-  width: 100%;
-}
-
-.summary-card h2,
-.pitch-card h2,
-.data-card h2 {
-  margin-top: 0;
-  margin-bottom: 1.5rem;
-  color: #333;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 1rem;
-}
-
-.summary-item {
-  text-align: center;
-  padding: 1rem;
-  background: #f8f9fa;
-  border-radius: 8px;
-}
-
-.item-label {
+  letter-spacing: 0.01em;
+  line-height: 1;
+  min-height: 1.1rem;    /* altura reservada — NÃO remover */
   display: block;
-  font-size: 0.9rem;
-  color: #666;
-  margin-bottom: 0.5rem;
-}
-
-.item-value {
-  display: block;
-  font-size: 1.2rem;
-  font-weight: 600;
-  color: #333;
-}
-
-.item-value.success {
-  color: #4caf50;
-}
-
-.pitch-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.stat-item {
-  text-align: center;
-  padding: 1.5rem;
-  background: linear-gradient(135deg, #f8f9fa, #e3f2fd);
-  border-radius: 8px;
-}
-
-.stat-number {
-  display: block;
-  font-size: 2rem;
-  font-weight: 700;
-  color: #2196f3;
-  margin-bottom: 0.5rem;
-}
-
-.stat-label {
-  font-size: 0.9rem;
-  color: #666;
-}
-
-/* Main Timeline Section */
-.main-timeline-section {
-  margin-bottom: 2rem;
-}
-
-.main-timeline-section .pitch-card {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(33, 150, 243, 0.05));
-  border: 3px solid #2196f3;
-  box-shadow: 0 12px 40px rgba(33, 150, 243, 0.2);
-  padding: 2.5rem;
-}
-
-/* Main Timeline Styles */
-.notes-timeline.main-view {
-  margin-bottom: 0;
-  background: transparent;
-  border-radius: 0;
-  padding: 0;
-  border: none;
-}
-
-.timeline-stats.horizontal {
-  display: flex;
-  justify-content: center;
-  gap: 2rem;
-  margin-bottom: 1.5rem;
-}
-
-.timeline-stats.horizontal .timeline-stat {
-  text-align: center;
-  padding: 0.5rem 1rem;
-  background: rgba(255, 255, 255, 0.8);
-  border-radius: 6px;
-  border: 1px solid #e3f2fd;
-  min-width: 80px;
-}
-
-.timeline-stats.horizontal .timeline-stat .stat-number {
-  display: block;
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: #1976d2;
-  margin-bottom: 0.25rem;
-}
-
-.timeline-stats.horizontal .timeline-stat .stat-label {
-  font-size: 0.8rem;
-  color: #666;
-  font-weight: 500;
-}
-
-.timeline-container.main-timeline {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 1rem;
-  padding: 2rem;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
-  max-height: 600px;
-  overflow-y: auto;
-  border: 2px solid #e3f2fd;
-}
-
-.note-block.main-block {
-  padding: 1rem;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  font-family: monospace;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 120px;
-  max-width: 160px;
-  min-height: 90px;
-  justify-content: center;
-}
-
-.note-block.main-block:hover {
-  transform: scale(1.05);
-  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
-}
-
-.note-block.main-block .word-text {
-  font-weight: 700;
-  color: #333;
-  text-align: center;
-  word-break: break-word;
-  margin-bottom: 0.5rem;
-  font-size: 0.9rem;
-  line-height: 1.3;
-  width: 100%;
-  hyphens: auto;
-}
-
-.note-block.main-block .word-note {
-  font-size: 0.8rem;
-  color: #666;
-  text-align: center;
-  font-weight: 600;
+  margin-bottom: 0.32rem;
   white-space: nowrap;
+  user-select: none;
 }
 
-.note-block.main-block.valid {
-  background: linear-gradient(135deg, #e8f5e8, #c8e6c9);
-  color: #2e7d32;
-  border: 2px solid #4caf50;
+/* status='show' → nota visível na cor da oitava */
+.cifra-note--show {
+  color: var(--nc);
 }
 
-.note-block.main-block.valid .word-text {
-  color: #2e7d32;
+/* status='continues' e 'gap' → invisível mas ocupa espaço */
+.cifra-note--continues,
+.cifra-note--gap {
+  color: transparent;
+  pointer-events: none;
 }
 
-.note-block.main-block.valid .word-note {
-  color: #1b5e20;
-  font-weight: 600;
+/* ── Texto da palavra (linha de baixo) ───────────────────────────────────────── */
+.cifra-text {
+  font-family: 'Georgia', serif;
+  font-size: 1.05rem;
+  line-height: 1;
+  white-space: nowrap;
+  transition: color 0.1s;
 }
 
-.note-block.main-block.invalid {
-  background: linear-gradient(135deg, #fafafa, #e0e0e0);
-  color: #666;
-  border: 2px solid #bdbdbd;
+/*
+ * status='show' → início de nota nova — mais brilhante, atrai atenção
+ */
+.cifra-text--show {
+  color: #f1f5f9;
 }
 
-.note-block.main-block.invalid .word-text {
-  color: #666;
+/*
+ * status='continues' → MESMA nota em andamento.
+ * Underline sutil na cor da nota = "ligadura visual".
+ * Comunica ao cantor: "continue nessa nota" sem poluir com texto repetido.
+ * Inspiração: notação de ligadura em partituras (tie notation).
+ */
+.cifra-text--continues {
+  color: #a0aec0;
+  border-bottom: 1.5px solid var(--nc-soft);
+  padding-bottom: 1px;
 }
 
-.note-block.main-block.invalid .word-note {
-  color: #999;
+/*
+ * status='gap' → sem nota detectada para esta palavra.
+ * Cor mais apagada: indica incerteza do detector (palavra curta,
+ * consoante, pausa, ou início de frase).
+ */
+.cifra-text--gap {
+  color: #4a5568;
 }
 
-.note-block {
-  padding: 0.5rem;
-  border-radius: 4px;
-  font-size: 0.7rem;
-  font-family: monospace;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 50px;
-  max-width: 80px;
+/*
+ * Hover: revela a nota real em qualquer estado.
+ * Útil para explorar a cifra e entender o que está suprimido.
+ */
+.cifra-word:hover .cifra-note--continues { color: var(--nc); opacity: 0.45; }
+.cifra-word:hover .cifra-note--gap       { color: #475569;   opacity: 0.45; }
+.cifra-word:hover .cifra-text            { color: #fff !important; }
+
+/* ── Legenda ─────────────────────────────────────────────────────────────────── */
+.rp-legend {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 0.4rem 0.75rem; margin-top: 1.75rem; padding-top: 1rem;
+  border-top: 1px solid #1e2135;
+  font-size: 0.73rem; font-family: 'Courier New', monospace;
+}
+.legend-label  { color: #475569; }
+.legend-dot    { font-size: 0.71rem; font-weight: 700; }
+.legend-sep    { color: #2d3148; }
+.legend-hint   { display: flex; align-items: center; gap: 0.35rem; color: #475569; }
+.legend-ul-sample {
+  display: inline-block; width: 24px; height: 0;
+  border-bottom: 1.5px solid #5b72d440;
+}
+.legend-hint--gap { color: #4a5568; font-style: italic; }
+
+/* ══════════════════════════════════════════════════════════════════════════════ */
+/* ANÁLISE                                                                        */
+/* ══════════════════════════════════════════════════════════════════════════════ */
+
+.rp-stats-wrap {
+  padding: 2rem; max-width: 760px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 1.5rem;
 }
 
-.word-text {
-  font-weight: 600;
-  color: #333;
-  text-align: center;
-  word-break: break-word;
-  margin-bottom: 0.25rem;
+.rp-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; }
+.rp-kpi {
+  background: #13161f; border: 1px solid #1e2135; border-radius: 10px;
+  padding: 1.25rem 1.5rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem;
 }
+.kpi-val   { font-family: 'Courier New', monospace; font-size: 2rem; font-weight: 700; color: #4f86c6; line-height: 1; }
+.kpi-label { font-size: 0.74rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.07em; }
 
-.word-note {
-  font-size: 0.6rem;
-  color: #666;
-  text-align: center;
-  font-weight: 500;
+.rp-dist-card { background: #13161f; border: 1px solid #1e2135; border-radius: 10px; padding: 1.75rem; }
+.rp-dist-title {
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #475569; margin-bottom: 1.25rem; font-family: 'Courier New', monospace;
 }
+.rp-dist-list { display: flex; flex-direction: column; gap: 0.6rem; }
+.rp-dist-row  { display: grid; grid-template-columns: 56px 1fr 36px; align-items: center; gap: 0.75rem; }
+.rp-dist-note { font-family: 'Courier New', monospace; font-size: 0.82rem; font-weight: 700; }
+.rp-dist-bar-wrap { height: 6px; background: #1e2135; border-radius: 3px; overflow: hidden; }
+.rp-dist-bar      { height: 100%; border-radius: 3px; transition: width 0.4s ease; opacity: 0.85; }
+.rp-dist-count    { font-family: 'Courier New', monospace; font-size: 0.78rem; color: #475569; text-align: right; }
 
-.note-block.valid {
-  background: #e8f5e8;
-  color: #2e7d32;
-  border: 1px solid #c8e6c9;
+.rp-info-card { background: #13161f; border: 1px solid #1e2135; border-radius: 10px; overflow: hidden; }
+.rp-info-row  {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.75rem 1.5rem; border-bottom: 1px solid #1e2135; font-size: 0.85rem;
 }
+.rp-info-row:last-child { border-bottom: none; }
+.rp-info-row span { color: #64748b; }
+.rp-info-row b    { color: #cbd5e1; font-weight: 600; font-family: 'Courier New', monospace; }
 
-.note-block.valid .word-text {
-  color: #2e7d32;
-}
-
-.note-block.valid .word-note {
-  color: #1b5e20;
-}
-
-.note-block.invalid {
-  background: #fafafa;
-  color: #666;
-  border: 1px solid #e0e0e0;
-}
-
-.note-block.invalid .word-text {
-  color: #666;
-}
-
-.note-block.invalid .word-note {
-  color: #999;
-}
-
-.note-block:hover {
-  transform: scale(1.1);
-}
-
-.more-notes {
-  padding: 0.25rem 0.5rem;
-  background: #e3f2fd;
-  color: #1976d2;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.note-distribution h3 {
-  margin-bottom: 1rem;
-  color: #333;
-}
-
-.distribution-chart {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.distribution-item {
-  display: grid;
-  grid-template-columns: 60px 1fr 40px;
-  align-items: center;
-  gap: 1rem;
-}
-
-.note-name {
-  font-family: monospace;
-  font-weight: 600;
-  color: #333;
-}
-
-.distribution-bar {
-  height: 20px;
-  background: #e0e0e0;
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.distribution-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #2196f3, #4caf50);
-  transition: width 0.3s ease;
-}
-
-.note-count {
-  font-weight: 600;
-  color: #333;
-  text-align: right;
-}
-
-.data-actions {
-  display: flex;
-  gap: 1rem;
-  margin-bottom: 2rem;
-  flex-wrap: wrap;
-}
-
-.export-btn,
-.home-btn {
-  padding: 0.75rem 1.5rem;
-  border: none;
-  border-radius: 6px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.export-btn {
-  background: #4caf50;
-  color: white;
-}
-
-.export-btn:hover {
-  background: #45a049;
-}
-
-.home-btn {
-  background: #2196f3;
-  color: white;
-}
-
-.home-btn:hover {
-  background: #1976d2;
-}
-
-.data-preview h3 {
-  margin-bottom: 1rem;
-  color: #333;
-}
-
-.json-preview {
-  background: #f8f9fa;
-  padding: 1rem;
-  border-radius: 8px;
-  font-size: 0.8rem;
-  color: #333;
-  max-height: 400px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.empty-state {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 60vh;
-}
-
-.empty-card {
-  background: rgba(255, 255, 255, 0.95);
-  padding: 3rem;
-  border-radius: 16px;
-  backdrop-filter: blur(10px);
-  text-align: center;
-  max-width: 400px;
-}
-
-.empty-icon {
-  font-size: 4rem;
-  margin-bottom: 1rem;
-}
-
-.empty-card h2 {
-  margin-bottom: 1rem;
-  color: #333;
-}
-
-.empty-card p {
-  color: #666;
-  margin-bottom: 2rem;
-}
-
-.action-btn {
-  padding: 1rem 2rem;
-  background: #2196f3;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.action-btn:hover {
-  background: #1976d2;
-}
-
-@media (max-width: 768px) {
-  .results-page {
-    padding: 1rem;
-  }
-  
-  .page-header h1 {
-    font-size: 1.5rem;
-  }
-  
-  .summary-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  
-  .pitch-stats {
-    grid-template-columns: 1fr;
-  }
-  
-  .distribution-item {
-    grid-template-columns: 50px 1fr 30px;
-    gap: 0.5rem;
-  }
-  
-  .data-actions {
-    flex-direction: column;
-  }
+/* ── Responsive ──────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .rp-header         { flex-wrap: wrap; gap: 0.75rem; padding: 1.25rem 1rem; }
+  .rp-header-actions { width: 100%; }
+  .rp-cifra-wrap,
+  .rp-stats-wrap     { padding: 1.25rem 0.75rem; }
+  .rp-cifra          { padding: 1.5rem 1rem 2rem; }
+  .rp-title          { font-size: 1.1rem; }
+  .cifra-text        { font-size: 0.9rem; }
+  .cifra-note        { font-size: 0.68rem; }
+  .cifra-line        { margin-bottom: 2rem; }
 }
 </style>

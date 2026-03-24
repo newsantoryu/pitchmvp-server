@@ -1,5 +1,33 @@
 # pitch_engine.py — detecção de pitch (torchcrepe + fallback pYIN)
-# Suporta voice_gender e suavização para melhor cifra
+#
+# Correções aplicadas (vs versão original):
+#
+#   PROBLEMA 1 — CORRIGIDO
+#     conf_min para voice_gender == "auto" caía no `else` de "female" e
+#     recebia 0.85 — o threshold mais restritivo, descartando mais frames
+#     em exatamente o modo padrão (auto). Substituído por dict explícito
+#     com valor intermediário 0.80 para "auto".
+#
+#   PROBLEMA 2 — CORRIGIDO
+#     librosa.decompose.nn_filter() foi projetado para denoising de
+#     espectrogramas 2D — aplicado num vetor 1D de frequências produz
+#     resultado matematicamente inesperado. Substituído por
+#     scipy.signal.savgol_filter (Savitzky-Golay), que preserva
+#     transições rápidas (portamentos) enquanto remove jitter de alta
+#     frequência. Fallback para mediana deslizante se scipy indisponível.
+#
+#   PROBLEMA 3 — CORRIGIDO (realtime)
+#     process_realtime_frame_moved() usava apenas pitch[0, 0] — o
+#     primeiro frame temporal do batch. Para janelas de 0.3–1 s o
+#     torchcrepe retorna dezenas de frames; só usar o primeiro introduz
+#     dependência de qual momento do frame foi enviado. Substituído por
+#     mediana dos frames voiced (periodicity > VOICED_THRESHOLD).
+#
+#   PROBLEMA 4 — CORRIGIDO (realtime)
+#     Threshold `voiced = confidence > 0.3` era permissivo demais —
+#     inclui ruído de fundo e respiração como nota cantada.
+#     Aumentado para VOICED_THRESHOLD = 0.50, que é o mínimo razoável
+#     para discriminar voz vs não-voz com torchcrepe.
 
 import logging
 import numpy as np
@@ -7,201 +35,190 @@ import asyncio
 import torch
 import torchcrepe
 from fastapi import HTTPException
+from app.note_utils import freq_to_note
 
 logger = logging.getLogger(__name__)
 
-# Importar função do módulo realtime
-# Removido import circular - função agora está definida neste arquivo
+# ---------------------------------------------------------------------------
+# Thresholds de confiança (periodicity do torchcrepe, 0–1)
+# ---------------------------------------------------------------------------
 
-# Mover process_realtime_frame para cá para resolver import circular
-def process_realtime_frame_moved(samples, sample_rate):
-    """
-    Processa frame realtime sem timeout (função pura para ser usada com safe_realtime_pitch)
-    """
-    logger.info(f"📊 Processando {len(samples)} samples")
-    
-    # Torch precisa de batch dimension
-    samples_tensor = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+# Batch (extract_pitch): threshold por gênero vocal.
+# "auto" recebe valor intermediário — não deve herdar o mais restritivo.
+CONF_MIN_BY_GENDER = {
+    "male":   0.78,
+    "female": 0.85,
+    "auto":   0.80,  # CORRIGIDO: antes caía no else → 0.85
+}
 
-    with torch.no_grad():
-        # torchcrepe.predict com periodicity para dados completos
-        pitch, periodicity = torchcrepe.predict(
-            audio=samples_tensor,
-            sample_rate=sample_rate,
-            fmin=50.0,
-            fmax=2000.0,
-            model="full",
-            hop_length=int(0.01 * sample_rate),  # 10ms por frame
-            device="cpu",
-            return_periodicity=True  # ✅ Obter confidence/periodicity
-        )
+# Realtime: threshold para considerar um frame como "voz presente".
+# 0.50 é o mínimo razoável para discriminar voz vs ruído/respiração.
+# (original era 0.30 — permissivo demais)
+VOICED_THRESHOLD = 0.50
 
-    # Pega o primeiro frame do batch
-    freq = float(pitch[0, 0].item())
-    confidence = float(periodicity[0, 0].item())
-    
-    # Análise musical completa
-    from app.music_utils import freq_to_note
-    # Função local para evitar import circular
-    def analyze_voice_characteristics(freq: float, confidence: float) -> dict:
-        """Análise completa das características vocais"""
-        
-        # Classificação de range vocal
-        if freq < 100:
-            voice_type = "Bass"
-            range_desc = "Grave"
-        elif freq < 200:
-            voice_type = "Tenor"
-            range_desc = "Médio-grave"
-        elif freq < 400:
-            voice_type = "Alto"
-            range_desc = "Médio-agudo"
-        else:
-            voice_type = "Soprano"
-            range_desc = "Agudo"
-        
-        return {
-            "voice_type": voice_type,
-            "range_description": range_desc,
-            "frequency_range": f"{freq:.1f}Hz",
-            "confidence_level": "Alta" if confidence > 0.7 else "Média" if confidence > 0.4 else "Baixa"
-        }
-    
-    note_result = freq_to_note(freq)
-    
-    # Análise de voz e range
-    voice_analysis = analyze_voice_characteristics(freq, confidence)
-    
-    # Dados completos do pitch core
-    result = {
-        # Dados básicos
-        "frequency": freq,
-        "note": note_result if isinstance(note_result, str) else (note_result["note"] if note_result else "-"),
-        "cents": note_result.get("cents", 0) if isinstance(note_result, dict) else 0,
-        
-        # Dados de confiança e qualidade
-        "confidence": confidence,
-        "periodicity": confidence,
-        "voiced": confidence > 0.3,  # Threshold melhorado
-        
-        # Análise de voz
-        "voice_analysis": voice_analysis,
-        
-        # Metadados do processamento
-        "sample_rate": sample_rate,
-        "hop_length": int(0.01 * sample_rate),
-        "frame_time": 0.01,
-        "processing_mode": "realtime",
-        "range_info": {
-            "fmin": 50.0,
-            "fmax": 2000.0,
-            "model": "full"
-        }
-    }
-    
-    logger.info(f"✅ Realtime frame processado: {result['note']} ({result['frequency']:.1f}Hz)")
-    return result
-
-# Configurações de timeout diferenciadas
+# ---------------------------------------------------------------------------
+# Timeouts
+# ---------------------------------------------------------------------------
 TIMEOUT_CONFIG = {
-    "pitch_extraction": 0,       # 0 = sem timeout - processamento pode demorar quanto precisar
-    "realtime_frame": 5,         # 5 segundos - deve ser instantâneo
-    "whisper_transcribe": 300,   # 5 minutos - arquivos longos são esperados
+    "pitch_extraction": 0,        # 0 = sem timeout — arquivo pode ser longo
+    "realtime_frame":   5,        # 5 s — deve ser quase instantâneo
+    "whisper_transcribe": 300,    # 5 min — arquivos longos são esperados
 }
 
+# ---------------------------------------------------------------------------
 # Ranges por gênero vocal (Hz)
-# Masculino: até 900 Hz para incluir tenor agudo e falsete (C5 ≈ 523, G5 ≈ 784)
-# Feminino: C3–G5; Auto: largo para qualquer voz
+# ---------------------------------------------------------------------------
 VOICE_RANGES = {
-    "male":   {"fmin": 75,  "fmax": 900,  "pyin_lo": "C2", "pyin_hi": "G5"},
-    "female": {"fmin": 120, "fmax": 900,  "pyin_lo": "C3", "pyin_hi": "G5"},
-    "auto":   {"fmin": 60,  "fmax": 900,  "pyin_lo": "C2", "pyin_hi": "C6"},
+    "male":   {"fmin":  75, "fmax": 900, "pyin_lo": "C2", "pyin_hi": "G5"},
+    "female": {"fmin": 120, "fmax": 900, "pyin_lo": "C3", "pyin_hi": "G5"},
+    "auto":   {"fmin":  60, "fmax": 900, "pyin_lo": "C2", "pyin_hi": "C6"},
 }
 
 
-def extract_pitch(path: str, voice_gender: str = "auto"):
+# ---------------------------------------------------------------------------
+# Suavização de pitch — Savitzky-Golay com fallback para mediana deslizante
+# ---------------------------------------------------------------------------
+
+def _smooth_pitch_frames(freqs: np.ndarray, window: int = 5) -> np.ndarray:
     """
-    Detecta pitch: torchcrepe (primário, com suavização) ou pYIN (fallback).
-    voice_gender: "male" | "female" | "auto"
+    Suaviza um array de frequências de pitch preservando transições rápidas
+    (portamentos, ornamentos) enquanto remove jitter de alta frequência.
+
+    Usa Savitzky-Golay (polinômio grau 2) — melhor que mediana para
+    sinal de pitch porque preserva a forma do contorno melódico.
+
+    Fallback para mediana deslizante se scipy não estiver disponível.
+
+    Args:
+        freqs:  array 1-D de frequências (Hz), já filtrado por confiança
+        window: tamanho da janela (ímpar). 5 ≈ 50 ms a 100 frames/s.
+    """
+    if len(freqs) < window:
+        return freqs
+
+    # Garante window ímpar
+    if window % 2 == 0:
+        window += 1
+
+    try:
+        from scipy.signal import savgol_filter
+        # polyorder=2: preserva forma quadrática (bom para curvas de pitch)
+        return savgol_filter(freqs, window_length=window, polyorder=2)
+    except ImportError:
+        # Fallback: mediana deslizante (mais robusta a outliers que média)
+        logger.warning("scipy indisponível — usando mediana deslizante para suavização")
+        half = window // 2
+        smoothed = freqs.copy()
+        for i in range(half, len(freqs) - half):
+            smoothed[i] = np.median(freqs[i - half: i + half + 1])
+        return smoothed
+
+
+# ---------------------------------------------------------------------------
+# extract_pitch — processamento batch (arquivo completo)
+# ---------------------------------------------------------------------------
+
+def extract_pitch(path: str, voice_gender: str = "auto") -> list[dict]:
+    """
+    Detecta pitch de um arquivo de áudio.
+
+    Estratégia primária: torchcrepe (modelo "full", alta precisão)
+    Fallback:           pYIN via librosa
+
+    Args:
+        path:         caminho para o arquivo de áudio
+        voice_gender: "male" | "female" | "auto"
+
+    Retorna lista de dicts {"time": float, "freq": float},
+    já filtrados por confiança e suavizados.
     """
     vr = VOICE_RANGES.get(voice_gender, VOICE_RANGES["auto"])
-    logger.info(f"Pitch range: {voice_gender} → fmin={vr['fmin']}Hz fmax={vr['fmax']}Hz")
+    conf_min = CONF_MIN_BY_GENDER.get(voice_gender, CONF_MIN_BY_GENDER["auto"])
 
-    # Primário: torchcrepe
+    logger.info(
+        "Pitch range: %s → fmin=%.0fHz fmax=%.0fHz conf_min=%.2f",
+        voice_gender, vr["fmin"], vr["fmax"], conf_min,
+    )
+
+    # ── Primário: torchcrepe ─────────────────────────────────────────────────
     try:
-        import torch
-        import torchcrepe
         import librosa
 
         audio, sr = librosa.load(path, sr=16000, mono=True)
         audio_t = torch.tensor(audio).unsqueeze(0)
+
         pitch, periodicity = torchcrepe.predict(
-            audio_t, sr, hop_length=160,
-            fmin=vr["fmin"], fmax=vr["fmax"],
-            model="full", batch_size=1024, device="cpu", return_periodicity=True
+            audio_t, sr,
+            hop_length=160,                # 10 ms por frame a 16 kHz
+            fmin=vr["fmin"],
+            fmax=vr["fmax"],
+            model="full",
+            batch_size=1024,
+            device="cpu",
+            return_periodicity=True,
         )
-        
-        # ✅ Liberar tensors imediatamente
-        pitch_np = pitch[0].cpu().numpy()
+
+        # Converter para numpy imediatamente e liberar tensores
+        pitch_np       = pitch[0].cpu().numpy()
         periodicity_np = periodicity[0].cpu().numpy()
-        
-        # ✅ Limpar tensors do torch
         del pitch, periodicity, audio_t
-        if 'torch' in locals():
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
+
+        import gc
+        gc.collect()
+
+        # Timestamps (10 ms por frame)
         times = np.arange(len(pitch_np)) * 0.01
-        conf_min = 0.78 if voice_gender == "male" else 0.85
+
+        # Filtro: confiança mínima + dentro do range vocal
+        mask = (
+            (periodicity_np >= conf_min) &
+            (pitch_np > 0) &
+            (pitch_np >= vr["fmin"]) &
+            (pitch_np <= vr["fmax"])
+        )
+
+        times_f = times[mask]
+        freqs_f = pitch_np[mask]
+
+        logger.info(
+            "torchcrepe: %d frames válidos de %d totais (%s, conf>=%.2f)",
+            len(freqs_f), len(pitch_np), voice_gender, conf_min,
+        )
+
+        # Suavização — Savitzky-Golay (CORRIGIDO: era nn_filter errado)
+        if len(freqs_f) > 5:
+            freqs_f = _smooth_pitch_frames(freqs_f, window=5)
+
         frames = [
-            {"time": float(t), "freq": float(p)}
-            for t, p, c in zip(times, pitch_np, periodicity_np)
-            if c >= conf_min and p > 0 and vr["fmin"] <= p <= vr["fmax"]
+            {"time": float(t), "freq": float(f)}
+            for t, f in zip(times_f, freqs_f)
         ]
-        logger.info(f"torchcrepe: {len(frames)} frames ({voice_gender}, conf>={conf_min})")
 
-        # Suavização (remove jitter)
-        if len(frames) > 3:
-            freqs = np.array([f["freq"] for f in frames])
-            smooth = librosa.decompose.nn_filter(
-                freqs.reshape(1, -1), aggregate=np.median
-            ).flatten()
-            for i in range(len(frames)):
-                frames[i]["freq"] = float(smooth[i])
-        
-        # ✅ Forçar garbage collection
-        import gc
         gc.collect()
-        
         return frames
-        
+
     except Exception as e:
-        logger.warning(f"torchcrepe indisponível ({e}), usando pYIN...")
-        
-        # ✅ Cleanup em caso de erro
-        if 'audio_t' in locals():
-            del audio_t
-        if 'pitch' in locals():
-            del pitch
-        if 'periodicity' in locals():
-            del periodicity
-        if 'torch' in locals():
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        logger.warning("torchcrepe indisponível (%s), usando pYIN...", e)
+
+        # Cleanup em caso de erro
+        for var_name in ("audio_t", "pitch", "periodicity"):
+            if var_name in locals():
+                del locals()[var_name]
         import gc
         gc.collect()
 
-    # Fallback: pYIN
+    # ── Fallback: pYIN ───────────────────────────────────────────────────────
     try:
         import librosa
+
         audio, sr = librosa.load(path, sr=22050, mono=True)
         f0, voiced_flag, _ = librosa.pyin(
             audio,
             fmin=librosa.note_to_hz(vr["pyin_lo"]),
             fmax=librosa.note_to_hz(vr["pyin_hi"]),
-            sr=sr, hop_length=512, fill_na=None,
+            sr=sr,
+            hop_length=512,
+            fill_na=None,
         )
         hop_duration = 512 / sr
         frames = [
@@ -209,68 +226,210 @@ def extract_pitch(path: str, voice_gender: str = "auto"):
             for i, (f, v) in enumerate(zip(f0, voiced_flag))
             if v and f and f > 0
         ]
-        logger.info(f"pYIN: {len(frames)} frames ({voice_gender})")
+        logger.info("pYIN: %d frames (%s)", len(frames), voice_gender)
         return frames
+
     except Exception as e:
-        logger.error(f"pYIN fallback falhou: {e}")
+        logger.error("pYIN fallback falhou: %s", e)
         return []
 
 
-# Funções seguras com timeout
-async def safe_extract_pitch(file_path: str, voice_gender: str = "auto"):
+# ---------------------------------------------------------------------------
+# process_realtime_frame — processamento de frame único (realtime)
+# ---------------------------------------------------------------------------
+
+def process_realtime_frame_moved(samples: list[float], sample_rate: int) -> dict:
     """
-    Executa extract_pitch sem timeout - processamento pode demorar quanto precisar
+    Processa um frame de áudio em tempo real.
+
+    Correções vs versão original:
+      - Agrega TODOS os frames voiced (periodicity > VOICED_THRESHOLD)
+        via mediana, em vez de usar apenas pitch[0, 0] (o 1º frame).
+      - voiced usa VOICED_THRESHOLD = 0.50, não 0.30.
+      - fmax reduzido para 900 Hz (range vocal realista).
+      - freq_to_note importada da fonte canônica (retorna cents).
+
+    Retorna dict completo com frequency, note, cents, confidence, voiced,
+    voice_analysis, sample_rate, hop_length, frame_time, processing_mode.
+    """
+    n_samples = len(samples)
+    logger.info("Processando %d samples @ %d Hz", n_samples, sample_rate)
+
+    hop_length = max(int(0.01 * sample_rate), 1)  # 10 ms por frame
+
+    samples_tensor = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+
+    with torch.no_grad():
+        pitch, periodicity = torchcrepe.predict(
+            audio=samples_tensor,
+            sample_rate=sample_rate,
+            fmin=50.0,
+            fmax=900.0,           # CORRIGIDO: 2000 Hz era alto demais para voz
+            model="full",
+            hop_length=hop_length,
+            device="cpu",
+            return_periodicity=True,
+        )
+
+    pitch_np       = pitch[0].cpu().numpy()       # shape: (n_frames,)
+    periodicity_np = periodicity[0].cpu().numpy()
+
+    # ── CORRIGIDO: agrega todos os frames voiced via mediana ─────────────────
+    # Original: freq = pitch[0, 0].item()  — apenas o 1º frame
+    voiced_mask = periodicity_np >= VOICED_THRESHOLD
+
+    if voiced_mask.any():
+        freq       = float(np.median(pitch_np[voiced_mask]))
+        confidence = float(np.mean(periodicity_np[voiced_mask]))
+    else:
+        # Nenhum frame com confiança suficiente — sem nota detectável
+        freq       = 0.0
+        confidence = float(np.max(periodicity_np)) if len(periodicity_np) > 0 else 0.0
+
+    # Nota musical (com cents — fonte canônica)
+    note_result = freq_to_note(freq) if freq > 0 else None
+
+    note_str  = note_result["note"]   if note_result else "-"
+    cents_val = note_result["cents"]  if note_result else 0
+    is_voiced = freq > 0 and confidence >= VOICED_THRESHOLD
+
+    result = {
+        # Dados principais
+        "frequency":   freq,
+        "note":        note_str,
+        "cents":       cents_val,
+
+        # Qualidade da detecção
+        "confidence":  confidence,
+        "periodicity": confidence,
+        "voiced":      is_voiced,       # CORRIGIDO: era > 0.3
+
+        # Análise de voz
+        "voice_analysis": _analyze_voice_characteristics(freq, confidence),
+
+        # Metadados do processamento
+        "sample_rate":     sample_rate,
+        "hop_length":      hop_length,
+        "frame_time":      0.01,
+        "frames_analyzed": int(voiced_mask.sum()),
+        "frames_total":    len(pitch_np),
+        "processing_mode": "realtime",
+        "range_info": {
+            "fmin":  50.0,
+            "fmax":  900.0,
+            "model": "full",
+        },
+    }
+
+    logger.info(
+        "Realtime: %s (%.1f Hz, conf=%.2f, %d/%d frames voiced)",
+        note_str, freq, confidence,
+        result["frames_analyzed"], result["frames_total"],
+    )
+    return result
+
+
+def _analyze_voice_characteristics(freq: float, confidence: float) -> dict:
+    """
+    Análise descritiva do range vocal — puramente informativa.
+    Classificação baseada nos ranges convencionais (SATB).
+    """
+    if freq <= 0:
+        voice_type   = "silence"
+        range_desc   = "Silêncio ou sem voz"
+    elif freq < 130:
+        voice_type   = "bass"
+        range_desc   = "Grave (Baixo)"
+    elif freq < 220:
+        voice_type   = "baritone_tenor"
+        range_desc   = "Médio-grave (Barítono / Tenor)"
+    elif freq < 350:
+        voice_type   = "alto_tenor"
+        range_desc   = "Médio (Alto / Tenor agudo)"
+    elif freq < 525:
+        voice_type   = "soprano_mezzo"
+        range_desc   = "Médio-agudo (Mezzo / Soprano)"
+    else:
+        voice_type   = "soprano_high"
+        range_desc   = "Agudo (Soprano agudo / Falsete)"
+
+    if confidence > 0.90:
+        quality = "excellent"
+    elif confidence > 0.80:
+        quality = "good"
+    elif confidence > 0.60:
+        quality = "fair"
+    else:
+        quality = "poor"
+
+    return {
+        "voice_type":       voice_type,
+        "range_description": range_desc,
+        "frequency_range":  f"{freq:.1f}Hz" if freq > 0 else "—",
+        "confidence_level": quality,
+        "is_in_vocal_range": 60 <= freq <= 900,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Wrappers assíncronos com timeout
+# ---------------------------------------------------------------------------
+
+async def safe_extract_pitch(file_path: str, voice_gender: str = "auto") -> list[dict]:
+    """
+    Executa extract_pitch em thread pool sem timeout.
+    Processamento de arquivos longos pode demorar — não limitamos aqui.
     """
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, extract_pitch, file_path, voice_gender)
-        return result
+        return await loop.run_in_executor(None, extract_pitch, file_path, voice_gender)
     except Exception as e:
-        logger.error(f"❌ Erro no processamento de pitch: {file_path} - {e}")
-        # Propaga erro real, não timeout
-        raise e
+        logger.error("Erro no processamento de pitch: %s — %s", file_path, e)
+        raise
 
 
-async def safe_whisper_transcribe(model, tmp_path, language):
+async def safe_whisper_transcribe(model, tmp_path: str, language: str):
     """
-    Executa transcrição Whisper com timeout generoso (5 minutos)
+    Executa transcrição Whisper com timeout de 5 minutos.
     """
+    from fastapi import HTTPException
+
+    def _transcribe():
+        return model.transcribe(tmp_path, word_timestamps=True, language=language)
+
     try:
         loop = asyncio.get_event_loop()
-        
-        # Função wrapper para passar argumentos corretamente
-        def transcribe_with_args():
-            return model.transcribe(tmp_path, word_timestamps=True, language=language)
-        
         segments, info = await asyncio.wait_for(
-            loop.run_in_executor(None, transcribe_with_args),
-            timeout=TIMEOUT_CONFIG["whisper_transcribe"]  # 5 minutos
+            loop.run_in_executor(None, _transcribe),
+            timeout=TIMEOUT_CONFIG["whisper_transcribe"],
         )
         return segments, info
     except asyncio.TimeoutError:
-        logger.error(f"⏰ Timeout na transcrição Whisper: {tmp_path}")
-        raise HTTPException(status_code=408, detail="Arquivo muito longo para processamento. Tente um arquivo menor.")
+        logger.error("Timeout na transcrição Whisper: %s", tmp_path)
+        raise HTTPException(
+            status_code=408,
+            detail="Arquivo muito longo para processamento. Tente um arquivo menor.",
+        )
 
 
-async def safe_realtime_pitch(samples, sample_rate):
+async def safe_realtime_pitch(samples: list[float], sample_rate: int) -> dict:
     """
-    Executa processamento realtime com timeout rigoroso (5 segundos)
+    Executa processamento realtime em thread pool com timeout rigoroso (5 s).
     """
+    from fastapi import HTTPException
+
+    def _process():
+        return process_realtime_frame_moved(samples, sample_rate)
+
     try:
         loop = asyncio.get_event_loop()
-        
-        # Usar função local para evitar import circular
-        def process_frame_with_args():
-            return process_realtime_frame_moved(samples, sample_rate)
-        
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, process_frame_with_args),
-            timeout=TIMEOUT_CONFIG["realtime_frame"]  # 5 segundos
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _process),
+            timeout=TIMEOUT_CONFIG["realtime_frame"],
         )
-        return result
     except asyncio.TimeoutError:
-        logger.error(f"⏰ Timeout no processamento realtime")
+        logger.error("Timeout no processamento realtime")
         raise HTTPException(status_code=408, detail="Timeout no processamento em tempo real")
     except Exception as e:
-        logger.error(f"❌ Erro no processamento realtime: {e}")
+        logger.error("Erro no processamento realtime: %s", e)
         raise HTTPException(status_code=500, detail="Erro no processamento de áudio")

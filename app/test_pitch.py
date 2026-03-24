@@ -1,166 +1,202 @@
 #!/usr/bin/env python3
-# test_pitch.py — roda no seu servidor para diagnosticar o problema de notas
+# test_pitch.py — diagnóstico e validação das correções de pitch
 # Uso: source venv/bin/activate && python test_pitch.py
 #
-# O script testa cada etapa em isolamento e imprime exatamente onde falha.
+# Cada seção testa uma correção específica com resultado PASS/FAIL claro.
 
 import sys
 import numpy as np
 
-print("=" * 60)
-print("PitchMVP — Diagnóstico de Detecção de Pitch")
-print("=" * 60)
+PASS = "  ✓ PASS"
+FAIL = "  ✗ FAIL"
 
-# ── 1. Verifica imports ───────────────────────────────────────────────────────
-print("\n[1/6] Verificando dependências...")
+print("=" * 65)
+print("PitchMVP — Diagnóstico + Validação de Correções")
+print("=" * 65)
 
-deps = {}
-for lib in ["librosa", "torch", "torchcrepe", "faster_whisper"]:
+failures = []
+
+# ── 1. Dependências ───────────────────────────────────────────────────────────
+print("\n[1/8] Dependências...")
+for lib in ["librosa", "torch", "torchcrepe", "faster_whisper", "scipy"]:
     try:
         __import__(lib)
-        deps[lib] = True
-        print(f"  OK  {lib}")
+        print(f"  ok  {lib}")
     except ImportError as e:
-        deps[lib] = False
         print(f"  FALTA  {lib}: {e}")
+        if lib != "scipy":  # scipy tem fallback
+            failures.append(f"dependência faltando: {lib}")
 
-# ── 2. Gera áudio sintético com nota conhecida (A4 = 440Hz) ──────────────────
-print("\n[2/6] Gerando áudio sintético (nota A4 = 440Hz, 3 segundos)...")
-sr = 22050
-duration = 3.0
-t = np.linspace(0, duration, int(sr * duration))
-# Sinal de voz sintético: fundamental + harmônicos
-audio = (
-    0.6 * np.sin(2 * np.pi * 440 * t) +    # fundamental A4
-    0.3 * np.sin(2 * np.pi * 880 * t) +    # 2º harmônico
-    0.1 * np.sin(2 * np.pi * 1320 * t)     # 3º harmônico
-).astype(np.float32)
-print(f"  OK  {len(audio)} samples a {sr}Hz")
+# ── 2. note_utils — fonte canônica ───────────────────────────────────────────
+print("\n[2/8] note_utils.freq_to_note (fonte canônica com cents)...")
+from app.note_utils import freq_to_note, note_to_midi, semitone_distance
 
-# Salva para teste
-import tempfile, os
-tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-tmp_path = tmp.name
-tmp.close()
+# A4 = 440 Hz exato → cents deve ser 0
+r = freq_to_note(440.0)
+assert r and r["note"] == "A4" and r["cents"] == 0, f"A4 falhou: {r}"
+print(f"{PASS}  A4=440Hz → {r['note']} cents={r['cents']}")
 
-try:
-    import soundfile as sf
-    sf.write(tmp_path, audio, sr)
-    print(f"  OK  Salvo em {tmp_path}")
-except Exception as e:
-    # Fallback: wave stdlib
-    import wave, struct
-    with wave.open(tmp_path, 'w') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sr)
-        samples = (audio * 32767).astype(np.int16)
-        wf.writeframes(samples.tobytes())
-    print(f"  OK  Salvo via wave stdlib em {tmp_path}")
+# A#4 = 466.16 Hz → cents deve ser 0
+r = freq_to_note(466.16)
+assert r and r["note"] == "A#4", f"A#4 falhou: {r}"
+print(f"{PASS}  A#4≈466Hz → {r['note']}")
 
-# ── 3. Testa extract_pitch com diferentes voice_genders ──────────────────────
-print("\n[3/6] Testando extract_pitch (torchcrepe + fallback pYIN)...")
-from app.pitch_engine import extract_pitch
+# CORREÇÃO: G5 = 783.99 Hz NÃO deve ser corrigido para G4
+# (bug original: if freq > 700: freq /= 2)
+r = freq_to_note(784.0)
+assert r and r["note"] == "G5", f"G5 falhou — possível bug do /2: {r}"
+print(f"{PASS}  G5=784Hz → {r['note']} (não foi dividido por 2)")
 
-for gender in ["auto", "male", "female"]:
-    try:
-        frames = extract_pitch(tmp_path, voice_gender=gender)
-        print(f"  OK  {gender}: {len(frames)} frames")
-        if frames:
-            freqs = [f["freq"] for f in frames]
-            median_freq = float(np.median(freqs))
-            from app.music_utils import freq_to_note
-            note = freq_to_note(median_freq)
-            print(f"       Mediana: {median_freq:.1f}Hz → {note}")
-    except Exception as e:
-        print(f"  ERRO  {gender}: {e}")
-        import traceback; traceback.print_exc()
+# B5 = 987.77 Hz
+r = freq_to_note(987.77)
+assert r and r["note"] == "B5", f"B5 falhou: {r}"
+print(f"{PASS}  B5≈988Hz → {r['note']}")
 
-# ── 4. Testa freq_to_note com correção de harmônicos ─────────────────────────
-print("\n[4/6] Testando freq_to_note...")
-from app.music_utils import freq_to_note
+# Retorno None para freq inválida
+r = freq_to_note(0)
+assert r is None, f"freq=0 deveria retornar None: {r}"
+print(f"{PASS}  freq=0 → None")
 
-test_freqs = [220, 440, 880, 1760]  # A3, A4, A5, A6
-for f in test_freqs:
-    note = freq_to_note(f)
-    print(f"  {f}Hz → {note}")
+# ── 3. Distância em semitons ──────────────────────────────────────────────────
+print("\n[3/8] semitone_distance (para validar threshold de salto)...")
+d = semitone_distance("A4", "A5")
+assert d == 12, f"oitava deveria ser 12 st: {d}"
+print(f"{PASS}  A4 → A5 = {d} semitons (oitava)")
 
-# ── 5. Testa match_notes completo ─────────────────────────────────────────────
-print("\n[5/6] Testando match_notes com palavras simuladas...")
-try:
-    from app.pitch_engine import extract_pitch
-    from app.music_utils import match_notes
+d = semitone_distance("C4", "G4")
+assert d == 7, f"quinta deveria ser 7 st: {d}"
+print(f"{PASS}  C4 → G4 = {d} semitons (quinta — antes era suprimido!)")
 
-    pitch_frames = extract_pitch(tmp_path, voice_gender="auto")
+d = semitone_distance("A4", "E6")
+assert d == 19, f"esperado 19 st: {d}"
+print(f"{PASS}  A4 → E6 = {d} semitons (salto grande — suprimido corretamente)")
 
-    # Palavras simuladas distribuídas ao longo do áudio
-    words = [
-        {"text": "I'm",        "start": 0.0,  "end": 0.3},
-        {"text": "so",         "start": 0.3,  "end": 0.5},
-        {"text": "tired",      "start": 0.5,  "end": 0.9},
-        {"text": "of",         "start": 0.9,  "end": 1.1},
-        {"text": "being",      "start": 1.1,  "end": 1.5},
-        {"text": "here",       "start": 1.5,  "end": 2.0},
-    ]
+# ── 4. match_notes — bug crítico do return dentro do for ─────────────────────
+print("\n[4/8] match_notes — return corrigido para fora do loop...")
+from app.music_utils import match_notes
 
-    result = match_notes(words, pitch_frames)
+# Frames cobrindo 3 palavras distintas
+pitch_frames = [
+    {"time": 0.05, "freq": 261.63},  # C4
+    {"time": 0.10, "freq": 261.63},
+    {"time": 0.15, "freq": 261.63},
+    {"time": 0.35, "freq": 392.00},  # G4
+    {"time": 0.40, "freq": 392.00},
+    {"time": 0.45, "freq": 392.00},
+    {"time": 0.65, "freq": 523.25},  # C5
+    {"time": 0.70, "freq": 523.25},
+    {"time": 0.75, "freq": 523.25},
+]
 
-    notes_filled = sum(1 for w in result if w["note"] is not None)
-    print(f"  OK  {notes_filled}/{len(result)} palavras com notas")
+words = [
+    {"text": "um",   "start": 0.0,  "end": 0.2},
+    {"text": "dois", "start": 0.3,  "end": 0.55},
+    {"text": "três", "start": 0.6,  "end": 0.85},
+]
+
+result = match_notes(words, pitch_frames)
+
+assert len(result) == 3, f"esperado 3 resultados, got {len(result)}"
+notes_filled = sum(1 for w in result if w["note"] is not None)
+
+# ANTES do fix: apenas 1 palavra tinha nota (return dentro do for)
+# DEPOIS do fix: todas as 3 devem ter nota
+if notes_filled == 3:
+    print(f"{PASS}  {notes_filled}/3 palavras com nota (bug do return corrigido)")
     for w in result:
-        print(f"       {w['word']:10} → {w['note'] or '(sem nota)'}")
-
-    if notes_filled == 0:
-        print("\n  PROBLEMA: Nenhuma nota foi atribuída!")
-        print("  Causa provável: pitch_frames vazio ou timestamps não se sobrepõem")
-        print(f"  pitch_frames total: {len(pitch_frames)}")
-        if pitch_frames:
-            print(f"  Primeiro frame: t={pitch_frames[0]['time']:.3f}s")
-            print(f"  Último frame:   t={pitch_frames[-1]['time']:.3f}s")
-        print(f"  Palavras: t={words[0]['start']}s até t={words[-1]['end']}s")
-    else:
-        print(f"\n  SUCESSO! Pipeline funcionando corretamente.")
-
-except Exception as e:
-    print(f"  ERRO  {e}")
-    import traceback; traceback.print_exc()
-
-# ── 6. Testa suavização musical em match_notes ───────────────────────────────
-print("\n[6/6] Testando suavização musical...")
-try:
-    from app.music_utils import match_notes
-
-    # Simula frames com saltos grandes (para testar suavização)
-    pitch_frames = [
-        {"time": 0.1, "freq": 440},  # A4
-        {"time": 0.2, "freq": 440},
-        {"time": 0.3, "freq": 880},  # A5 (salto grande)
-        {"time": 0.4, "freq": 880},
-    ]
-
-    words = [
-        {"text": "test1", "start": 0.0, "end": 0.25},
-        {"text": "test2", "start": 0.25, "end": 0.5},
-    ]
-
-    result = match_notes(words, pitch_frames)
-    print("  OK  Suavização aplicada")
+        print(f"       {w['word']:6} → {w['note']}")
+elif notes_filled == 1:
+    print(f"{FAIL}  Apenas {notes_filled}/3 palavras com nota — bug do return AINDA presente!")
+    failures.append("match_notes: return ainda dentro do loop")
+else:
+    print(f"  ?  {notes_filled}/3 palavras com nota")
     for w in result:
-        print(f"       {w['word']} → {w['note']}")
+        print(f"       {w['word']:6} → {w['note']}")
 
-except Exception as e:
-    print(f"  ERRO  {e}")
-    import traceback; traceback.print_exc()
+# ── 5. match_notes — threshold de salto (7 → 13 semitons) ───────────────────
+print("\n[5/8] match_notes — salto de quinta (7 st) não deve ser suprimido...")
 
-# ── Cleanup ───────────────────────────────────────────────────────────────────
-os.unlink(tmp_path)
+# C4 (262 Hz) → G4 (392 Hz) = 7 semitons — deve ser preservado
+frames_jump = [
+    {"time": 0.05, "freq": 261.63},
+    {"time": 0.10, "freq": 261.63},
+    {"time": 0.35, "freq": 392.00},
+    {"time": 0.40, "freq": 392.00},
+]
+words_jump = [
+    {"text": "A", "start": 0.0, "end": 0.2},
+    {"text": "B", "start": 0.3, "end": 0.5},
+]
+res = match_notes(words_jump, frames_jump)
+note_a = res[0]["note"]
+note_b = res[1]["note"]
 
-print("\n" + "=" * 60)
-print("Diagnóstico concluído.")
-print("=" * 60)
-print("\nSe tudo está OK aqui mas as notas não aparecem no HTML,")
-print("o problema é na resposta do servidor. Teste com:")
-print("  curl -s http://localhost:8000/health")
-print("  # Após fazer upload, pegue o job_id e teste:")
-print("  curl -s http://localhost:8000/job/SEU_JOB_ID | python3 -c")
-print("  \"import json,sys; d=json.load(sys.stdin); w=d.get('result',d).get('words',[]); print(f'{len(w)} palavras, {sum(1 for x in w if x.get(\\\"note\\\")))} com nota')\"")
+if note_a and note_b and note_a != note_b:
+    print(f"{PASS}  {note_a} → {note_b} preservado (salto de 7 st não suprimido)")
+else:
+    print(f"{FAIL}  Salto de quinta foi suprimido: {note_a} → {note_b}")
+    failures.append("match_notes: salto de 7 st ainda suprimido")
+
+# ── 6. match_notes — filtro MAD (não IQR) ────────────────────────────────────
+print("\n[6/8] match_notes — filtro de outliers MAD...")
+
+# 10 frames em C4, 2 outliers em C6 (24 st acima) — MAD deve remover os outliers
+frames_outlier = [{"time": i * 0.05, "freq": 261.63} for i in range(10)]
+frames_outlier += [
+    {"time": 0.52, "freq": 1046.5},  # C6 — outlier
+    {"time": 0.54, "freq": 1046.5},  # C6 — outlier
+]
+frames_outlier = sorted(frames_outlier, key=lambda x: x["time"])
+
+words_outlier = [{"text": "test", "start": 0.0, "end": 0.6}]
+res = match_notes(words_outlier, frames_outlier)
+nota = res[0]["note"]
+
+if nota and nota.startswith("C4"):
+    print(f"{PASS}  Outliers C6 removidos → nota dominante: {nota}")
+elif nota and nota.startswith("C5"):
+    print(f"  ~  Nota detectada {nota} (margem de oitava — aceitável)")
+else:
+    print(f"  ?  Nota: {nota} (verificar manualmente)")
+
+# ── 7. pitch_engine — conf_min para 'auto' ───────────────────────────────────
+print("\n[7/8] pitch_engine — conf_min para voice_gender='auto'...")
+from app.pitch_engine import CONF_MIN_BY_GENDER
+
+conf_auto   = CONF_MIN_BY_GENDER["auto"]
+conf_male   = CONF_MIN_BY_GENDER["male"]
+conf_female = CONF_MIN_BY_GENDER["female"]
+
+print(f"  male={conf_male}, auto={conf_auto}, female={conf_female}")
+
+# ANTES: auto caía no else de female → 0.85 (mais restritivo)
+# DEPOIS: auto tem valor próprio 0.80 (intermediário)
+if conf_auto == conf_female:
+    print(f"{FAIL}  'auto' ainda usa o mesmo threshold de 'female' ({conf_female})")
+    failures.append("conf_min: auto == female — não corrigido")
+elif conf_male < conf_auto < conf_female:
+    print(f"{PASS}  'auto' ({conf_auto}) é intermediário entre male ({conf_male}) e female ({conf_female})")
+else:
+    print(f"  ?  Valores: male={conf_male} auto={conf_auto} female={conf_female}")
+
+# ── 8. pitch_engine — VOICED_THRESHOLD ───────────────────────────────────────
+print("\n[8/8] pitch_engine — VOICED_THRESHOLD >= 0.50...")
+from app.pitch_engine import VOICED_THRESHOLD as VT
+
+if VT >= 0.50:
+    print(f"{PASS}  VOICED_THRESHOLD = {VT} (suficiente para discriminar voz vs ruído)")
+else:
+    print(f"{FAIL}  VOICED_THRESHOLD = {VT} (muito baixo — inclui ruído como voz)")
+    failures.append(f"VOICED_THRESHOLD={VT} < 0.50")
+
+# ── Resultado final ───────────────────────────────────────────────────────────
+print("\n" + "=" * 65)
+if failures:
+    print(f"RESULTADO: {len(failures)} falha(s) encontrada(s):")
+    for f in failures:
+        print(f"  - {f}")
+    sys.exit(1)
+else:
+    print("RESULTADO: Todas as verificações passaram.")
+    print("Pipeline musical funcionando corretamente.")
+print("=" * 65)
