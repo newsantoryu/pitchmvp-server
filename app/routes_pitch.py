@@ -13,7 +13,10 @@ TRANSCRIBE_SEMAPHORE = asyncio.Semaphore(2)  # Máximo 2 processamentos simultâ
 from pydantic import BaseModel
 from app.pitch_engine import extract_pitch, safe_extract_pitch, safe_whisper_transcribe
 from app.music_utils import match_notes, detect_range
+from app.utils.language_utils import add_romanization, get_whisper_language
 from app.memory_manager import whisper_model_context, get_db_session, jobs, log_memory_usage
+from korean_quality_detector import analyze_transcription_quality
+from repetition_filter import clean_whisper_output
 from app.models import Score
 
 logger = logging.getLogger(__name__)
@@ -45,8 +48,13 @@ async def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", langua
             jobs[job_id] = {"status": "transcribing", "progress": 20}
             logger.info(f"📝 Usando modelo Whisper em cache...")
             
+            # Para coreano/japonês: auto-detect no Whisper (None) para lidar
+            # bem com músicas mistas (partes em inglês intercaladas)
+            whisper_lang = get_whisper_language(language)
+            logger.info(f"🌐 Idioma UI: {language} → Whisper language: {whisper_lang!r}")
+            
             # Transcrição com timeout generoso (5 minutos)
-            segments, info = await safe_whisper_transcribe(model, tmp_path, language)
+            segments, info = await safe_whisper_transcribe(model, tmp_path, whisper_lang)
             
             # Atualiza progresso após transcrição
             jobs[job_id] = {"status": "transcribing", "progress": 60}
@@ -58,22 +66,69 @@ async def run_job(job_id: str, tmp_path: str, voice_gender: str = "auto", langua
             for seg in segments:
                 if hasattr(seg, "words") and seg.words:
                     for w in seg.words:
-                        words.append({
-                            "text": w.word.strip(),
-                            "start": round(w.start, 3),
-                            "end": round(w.end, 3),
-                            "note": None
-                        })
-                        word_count += 1
+                        word_text = w.word.strip()
+                        if word_text:  # Apenas adicionar palavras não vazias
+                            words.append({
+                                "text": word_text,
+                                "start": round(w.start, 3),
+                                "end": round(w.end, 3),
+                                "note": None
+                            })
+                            word_count += 1
+                        else:
+                            logger.warning(f"Palavra vazia ignorada: '{w.word}'")
                         
                         # Atualiza progresso a cada 50 palavras processadas
                         if word_count % 50 == 0:
                             progress = 60 + min(10, (word_count / 500) * 10)
                             jobs[job_id] = {"status": "transcribing", "progress": int(progress)}
             
+            logger.info(f"DEBUG - Palavras extraídas: {len(words)}")
+            for i, w in enumerate(words[:10]):  # Logar primeiras 10 palavras
+                logger.info(f"DEBUG - Palavra {i}: '{w['text']}' (len={len(w['text'])})")
+                # Verificar cada caractere individualmente
+                for j, char in enumerate(w['text']):
+                    logger.info(f"  Char {j}: '{char}' (unicode: {ord(char) if char else 'empty'})")
+            
+            # Análise de qualidade para coreano se idioma for coreano
+            if language == 'ko':
+                logger.info("ANÁLISE DE QUALIDADE - Detectando coreano perdido...")
+                quality_ok = analyze_transcription_quality(words)
+                if not quality_ok:
+                    logger.warning("AVISO: Possível coreano mal transcrito detectado!")
+                else:
+                    logger.info("QUALIDADE OK: Transcrição parece adequada")
+                
+                # Limpar repetições e sobreposições
+                logger.info("LIMPANDO REPETIÇÕES - Aplicando filtro pós-Whisper...")
+                words_before_clean = len(words)
+                words = clean_whisper_output(words, language)
+                words_after_clean = len(words)
+                reduction = words_before_clean - words_after_clean
+                reduction_pct = (reduction / words_before_clean * 100) if words_before_clean > 0 else 0
+                logger.info(f"LIMPEZA CONCLUÍDA: {reduction} palavras removidas ({reduction_pct:.1f}% redução)")
+                
+                # Logar amostra após limpeza
+                logger.info("Amostra após limpeza:")
+                for i, w in enumerate(words[:10]):
+                    logger.info(f"  Pós-limpeza {i}: '{w['text']}'")
+            
+            # Aplicar romanização ANTES do pitch
+            logger.info(f"DEBUG - Sobre chamar add_romanization para {len(words)} palavras, idioma: {language}")
+            add_romanization(words, language)
+            logger.info(f"DEBUG - add_romanization retornou")
+            logger.info(f"**Romanização aplicada para idioma: {language}")
+            
+            # Verificar se romanização foi aplicada
+            romanized_count = sum(1 for w in words if w.get('romanized'))
+            logger.info(f"DEBUG - Palavras romanizadas: {romanized_count}/{len(words)}")
+            
+            for i, w in enumerate(words[:5]):  # Logar primeiras 5 palavras com romanização
+                logger.info(f"DEBUG - Palavra {i}: '{w['text']}' -> '{w.get('romanized')}'")
+            
             # Atualiza progresso antes do pitch detection
             jobs[job_id] = {"status": "pitch", "progress": 70}
-            logger.info(f"🎯 Iniciando detecção de pitch para {len(words)} palavras")
+            logger.info(f" Iniciando detecção de pitch para {len(words)} palavras")
             
             # Detecta pitch com timeout de segurança (180 segundos)
             pitch_frames = await safe_extract_pitch(tmp_path, voice_gender=voice_gender)

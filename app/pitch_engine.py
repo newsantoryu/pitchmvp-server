@@ -395,7 +395,58 @@ async def safe_whisper_transcribe(model, tmp_path: str, language: str):
     from fastapi import HTTPException
 
     def _transcribe():
-        return model.transcribe(tmp_path, word_timestamps=True, language=language)
+        # Configuração com fallback automático
+        if language == 'ko':
+            # Configurações em ordem de importância (maior para menor)
+            configs = [
+                # Configuração conservadora (evita repetições)
+                {
+                    'word_timestamps': True,
+                    'language': language,
+                    'initial_prompt': "Korean speech transcription. Please transcribe in Korean Hangul script. Avoid repetition and be concise.",
+                    'temperature': 0.0,  # Mais determinístico
+                    'beam_size': 3,      # Reduzido de 5 para 3
+                    'best_of': 3,        # Reduzido de 5 para 3
+                    'condition_on_previous_text': False  # DESATIVADO para evitar loops
+                },
+                # Configuração média (sem best_of)
+                {
+                    'word_timestamps': True,
+                    'language': language,
+                    'initial_prompt': "Korean speech transcription. Please transcribe in Korean Hangul script.",
+                    'temperature': 0.0,
+                    'beam_size': 3,      # Reduzido
+                    'condition_on_previous_text': False
+                },
+                # Configuração mínima (só initial_prompt)
+                {
+                    'word_timestamps': True,
+                    'language': language,
+                    'initial_prompt': "Korean speech transcription. Please transcribe in Korean Hangul script.",
+                    'condition_on_previous_text': False
+                },
+                # Configuração básica (sem otimizações)
+                {
+                    'word_timestamps': True,
+                    'language': language
+                }
+            ]
+            
+            # Tentar configurações em ordem
+            for i, config in enumerate(configs):
+                try:
+                    logger.info(f"Tentando configuração {i+1} com {len(config)} parâmetros para coreano")
+                    return model.transcribe(tmp_path, **config)
+                except TypeError as e:
+                    logger.warning(f"Configuração {i+1} falhou: {e}")
+                    continue
+            
+            # Se todas falharem, usar o básico
+            logger.warning("Todas as configurações otimizadas falharam, usando básica")
+            return model.transcribe(tmp_path, word_timestamps=True, language=language)
+        else:
+            # Configuração padrão para outros idiomas
+            return model.transcribe(tmp_path, word_timestamps=True, language=language)
 
     try:
         loop = asyncio.get_event_loop()

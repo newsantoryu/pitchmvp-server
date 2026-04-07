@@ -47,6 +47,13 @@ const viewMode        = ref('cifra')
 
 const WORDS_PER_LINE = 8
 
+// Detecta se o texto contém caracteres coreanos
+function hasKoreanCharacters(text) {
+  if (!text) return false
+  // Unicode range for Korean characters (Hangul)
+  return /[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]/.test(text)
+}
+
 /**
  * Após este número de palavras sem nota consecutivas, o contexto tonal é
  * considerado perdido e a próxima nota será exibida independente de repetição.
@@ -121,6 +128,14 @@ async function loadTranscription() {
 function buildAnnotatedWords(words, wordsPerLine) {
   if (!words?.length) return []
 
+  // DEBUG: Log das palavras recebidas
+  console.log('DEBUG - Palavras recebidas:', words.slice(0, 5))
+  console.log('DEBUG - Campo romanized:', words.map(w => ({
+    text: w.text,
+    romanized: w.romanized,
+    hasRomanized: !!w.romanized
+  })).slice(0, 5))
+
   let lastShownNote = null  // última nota efetivamente exibida na tela
   let gapCount      = 0     // palavras consecutivas sem nota desde a última nota
 
@@ -162,7 +177,8 @@ function buildAnnotatedWords(words, wordsPerLine) {
     }
 
     return {
-      text:        word.text  ?? '',
+      text:        word.text       ?? '',
+      romanized:   word.romanized  ?? null,
       actualNote:  note,
       displayNote,
       noteStatus,
@@ -424,8 +440,9 @@ onMounted(loadTranscription)
                 gap       → cor apagada
               -->
               <span class="cifra-text" :class="`cifra-text--${word.noteStatus}`">
-                {{ word.text }}
+                {{ word.romanized || word.text }}
               </span>
+
             </div>
           </div>
 
@@ -700,6 +717,35 @@ onMounted(loadTranscription)
 }
 
 /*
+ * ── Romanização fonética (easy lyrics) ───────────────────────────────────────
+ * Exibida abaixo da palavra original para idiomas não-latinos (ko, ja).
+ * Estética inspirada em furigana / karaoke screens:
+ *   - fonte menor e monoespaçada para manter alinhamento
+ *   - cor suave para não competir com a nota acima
+ *   - letter-spacing leve para facilitar leitura silábica
+ */
+.cifra-romanized {
+  display: block;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+  color: #7c8fa8;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  margin-top: 0.25rem;
+  white-space: nowrap;
+  user-select: text;
+}
+
+/*
+ * Debug indicator for missing romanization
+ */
+.cifra-romanized.debug {
+  color: #ff6b6b;
+  font-style: italic;
+  font-size: 0.6rem;
+}
+
+/*
  * Hover: revela a nota real em qualquer estado.
  * Útil para explorar a cifra e entender o que está suprimido.
  */
@@ -707,7 +753,9 @@ onMounted(loadTranscription)
 .cifra-word:hover .cifra-note--gap       { color: #475569;   opacity: 0.45; }
 .cifra-word:hover .cifra-text            { color: #fff !important; }
 
-/* ── Legenda ─────────────────────────────────────────────────────────────────── */
+/* 
+ * Legenda 
+ */
 .rp-legend {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: 0.4rem 0.75rem; margin-top: 1.75rem; padding-top: 1rem;

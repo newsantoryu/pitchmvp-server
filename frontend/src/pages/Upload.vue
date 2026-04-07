@@ -238,6 +238,7 @@ function getProgressDetail() {
             <select v-model="transcriptionLanguage">
               <option value="en">English (US)</option>
               <option value="pt">Português (Brasil)</option>
+              <option value="ko">한국어 · Korean (+ English mix)</option>
             </select>
           </label>
         </div>
